@@ -26,7 +26,7 @@ import type { GameEvent, EventChoice } from './eventsEngine';
 import { getRandomEventWithAuction } from './eventsEngine';
 import type { BuildingId, EmployeeSpecialty, ExpansionEvent, ExpansionEventChoice } from './expansionTypes';
 import { chooseExpansionEvent, applyExpansionEventChoice } from './expansionEventsEngine';
-import { applyClinicRecovery, calculateBuildingWeeklyEffects, getBuildingActionCost, getBuildingDefinition, healthFromExact, specialtiesForSlot, totalPostCount } from './buildingsEngine';
+import { applyClinicRecovery, calculateBuildingWeeklyEffects, getBuildingActionCost, getBuildingDefinition, healthFromExact, specialtiesForSlot, startBuildingUpgrade, totalPostCount } from './buildingsEngine';
 import { advanceEmployeesWeek, createEmployeeCandidates, EMPLOYEE_CANDIDATE_CAP, ensureEmployeeCandidatesForVacancies, hiringSlotUpkeep, makeHiredEmployee, quoteHiringSlot, refreshEmployeeCandidates, rerollEmployeeCandidates, getVacantSpecialties, fitsSpecialty, requiredGenderForSpecialty, specialtyDefinitionOf } from './employeesEngine';
 import { buildChiefDoctorReport } from './chiefDoctorEngine';
 import { calculateStaffing } from './staffingCalculator';
@@ -848,35 +848,38 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
   const buildOrUpgradeBuilding = (buildingId: BuildingId) => {
     const building = gameState.auxiliaryBuildings.find(item => item.id === buildingId);
     if (!building) return;
-    const cost = getBuildingActionCost(building);
-    if (cost === null) {
-      showNotify('Здание уже достигло максимального уровня.');
+    if ((building.upgradeWeeksRemaining ?? 0) > 0) {
+      showNotify(`Улучшение «${getBuildingDefinition(buildingId).name}» уже идёт — осталось ${building.upgradeWeeksRemaining} нед.`);
       return;
     }
-    if (gameState.funds < cost) {
-      showNotify(`Недостаточно средств: требуется ${formatMoney(cost)}.`);
+    const result = startBuildingUpgrade(gameState.auxiliaryBuildings, buildingId);
+    if (!result) return;
+    if (gameState.funds < result.cost) {
+      showNotify(`Недостаточно средств: требуется ${formatMoney(result.cost)}.`);
       return;
     }
-    const nextLevel = building.level + 1;
-    const definition = getBuildingDefinition(buildingId);
     setGameState(prev => {
-      const auxiliaryBuildings = prev.auxiliaryBuildings.map(item => item.id === buildingId ? { ...item, level: nextLevel } : item);
       const prioritySpecialties = getVacantSpecialties(
-        auxiliaryBuildings,
+        result.buildings,
         prev.employees,
         prev.restZone.attendantIds,
         recommendedAttendantCount(prev.restZone.seats)
       );
       return {
         ...prev,
-        funds: prev.funds - cost,
-        auxiliaryBuildings,
+        funds: prev.funds - result.cost,
+        auxiliaryBuildings: result.buildings,
         metaProgress: registerBuildingConstructed(prev.metaProgress),
         employeeCandidates: ensureEmployeeCandidatesForVacancies(prev.employeeCandidates, prioritySpecialties, prev.week),
-        log: [`${building.level === 0 ? 'Построено' : 'Улучшено'} здание «${definition.name}» до уровня ${nextLevel} за ${formatMoney(cost)}.`, ...prev.log].slice(0, 50)
+        log: [
+          result.completed
+            ? `${building.level === 0 ? 'Построено' : 'Улучшено'} здание «${getBuildingDefinition(buildingId).name}» до уровня ${result.targetLevel} за ${formatMoney(result.cost)}.`
+            : `Улучшение «${getBuildingDefinition(buildingId).name}» начато: ${result.weeks} нед., ${formatMoney(result.cost)}.`,
+          ...prev.log
+        ].slice(0, 50)
       };
     });
-    showNotify(`${definition.name}: уровень ${nextLevel}.`);
+    showNotify(result.completed ? `${getBuildingDefinition(buildingId).name}: уровень ${result.targetLevel}.` : `Улучшение начато — ${result.weeks} нед.`);
   };
 
   const assignEmployeeToBuilding = (employeeId: string, buildingId: BuildingId | null, slotIndex = 0) => {

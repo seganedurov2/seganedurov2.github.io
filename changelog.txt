@@ -1,11 +1,56 @@
 CHANGELOG.txt
 ================================================================================
 PROJECT: Pawn Pleasure
-VERSION: 0.6.6
+VERSION: 0.6.7
 LAST UPDATED: 2026-11-08
-===============================================================================
+=================================================================================
 
-[VERSION 0.6.6 - CURRENT RELEASE] "Контракты и поставки"
+[VERSION 0.6.7 - CURRENT RELEASE] "Персонал и здания"
+
+  СПЕЦИАЛИЗАЦИИ СОТРУДНИКОВ (save-compatible)
+  * employeesEngine: матрица SPECIALIZATION_WEEKLY_EFFECTS «специальность →
+    недельный эффект» — выручка (venueRevenueBonusPercent), качество
+    (qualityBonusPercent), скорость (speedBonusPercent), снижение риска
+    (riskReductionBonusPercent) за каждый besetzt пост. specializationWeeklyEffects
+    всегда возвращает числа, защита от незнакомой роли — нули.
+  * buildingsEngine: checkPostCompatibility(employee, building, slotIndex)
+    валидирует пост по специальности и полу через 기존 fitsSpecialty /
+    specialtiesForSlot; FacilityRow предупреждает о несовместимом назначении.
+
+  АПГРЕЙДЫ ЗДАНИЙ (время, содержание, окупаемость)
+  * buildingsEngine: BuildingDefinition получил constructionWeeks / upgradeWeeks
+    (дефолт 0 для старых сейвов = мгновенно), новые поля upkeep,
+    venueRevenueBonusPercent, qualityBonusPercent, speedBonusPercent,
+    riskReductionBonusPercent в weeklyEffectsByLevel всех зданий.
+  * startBuildingUpgrade / advanceBuildingUpgrades: timed-апгрейды с
+    стоимостью, неделями и целевым уровнем; нельзя начать два апгрейда
+    одного здания одновременно.
+  * saveState.migrateCampaignState переносит upgradeWeeksRemaining /
+    upgradeTargetLevel с дефолтами; старые слоты загружаются без потери данных.
+  * campaignWeek: апгрейды тикают каждую неделю, завершение пишется в журнал;
+    содержание зданий (buildingsUpkeep) списывается в чистый доход и в
+    отчёт за неделю (expenses.buildings), без NaN.
+
+  UI ПЕРСОНАЛА И ЗДАНИЙ
+  * FacilityRow: карточка здания показывает «что даёт сейчас» (содержание и
+    модификаторы уровня), сравнение до/после апгрейда (уровень, эффекты,
+    недели, стоимость), предупреждения «недостаточно средств» и
+    «не хватает штата» при некомплекте обязательных постов.
+  * WeeklyOperationsSummary: строка содержания зданий на следующую неделю.
+
+  ТЕСТЫ
+  * buildingsEngine.test: апгрейды (start/advance, clamp maxLevel), статус
+    здания, эффекты недели без NaN по всем уровням, матрица специализаций,
+    checkPostCompatibility (в т.ч. пол замка госпожа/мастер).
+  * employeesEngine.test: матрица специализаций, границы quoteHiringSlot.
+  * saveState.test: миграция флагов апгрейдов со старых слотов.
+  * campaignWeek.test: содержание зданий в отчёте, завершение апгрейда за
+    несколько недель, все цифры недели конечны.
+
+  RELEASE
+  * package.json 0.6.7; changelog раздел 0.6.7.
+
+[VERSION 0.6.6 - PREVIOUS RELEASE] "Контракты и поставки"
 
   КОНТРАКТЫ ПОКУПАТЕЛЕЙ (save-compatible, optional поля + миграция)
   * slaveContractsEngine: KPI-поток дедлайна/перевыполнения — deadlineWeek,

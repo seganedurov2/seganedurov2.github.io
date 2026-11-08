@@ -375,4 +375,23 @@ describe('saveState meta-progress migration', () => {
     expect(migrated.metaProgress.prestige.level).toBe(0);
     expect(migrated.weeklyReports).toEqual([]);
   });
+
+  it('normalizes auxiliary buildings with defaults and carries upgrade flags', () => {
+    const campaign = createInitialCampaign({ fresh: true });
+    const legacy = {
+      ...JSON.parse(JSON.stringify(campaign)),
+      auxiliaryBuildings: [
+        { id: 'school', level: 1, assignedEmployeeIds: [] },
+        { id: 'hospital', level: 2, upgradeWeeksRemaining: 2, upgradeTargetLevel: 3, assignedEmployeeIds: [] }
+      ]
+    };
+    const migrated = migrateCampaignState(legacy);
+    const school = migrated.auxiliaryBuildings.find(building => building.id === 'school')!;
+    expect(school.level).toBe(1);
+    expect(school.upgradeWeeksRemaining).toBeUndefined();
+    const hospital = migrated.auxiliaryBuildings.find(building => building.id === 'hospital')!;
+    expect(hospital.level).toBe(2);
+    expect(hospital.upgradeWeeksRemaining).toBe(2);
+    expect(hospital.upgradeTargetLevel).toBe(3);
+  });
 });

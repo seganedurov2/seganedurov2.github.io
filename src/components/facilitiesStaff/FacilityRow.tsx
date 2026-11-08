@@ -1,7 +1,14 @@
 import { Building2 } from 'lucide-react';
-import type { AuxiliaryBuildingState, Employee } from '../../expansionTypes';
-import type { BuildingDefinition } from '../../buildingsEngine';
-import { getBuildingActionCost, getBuildingStatus, genderLockNote } from '../../buildingsEngine';
+import type { AuxiliaryBuildingState, BuildingOperationalStatus, Employee } from '../../expansionTypes';
+import type { BuildingDefinition, BuildingWeeklyEffect } from '../../buildingsEngine';
+import {
+  buildingActionWeeks,
+  calculateBuildingWeeklyEffects,
+  checkPostCompatibility,
+  getBuildingActionCost,
+  getBuildingStatus,
+  genderLockNote
+} from '../../buildingsEngine';
 import { fitsSpecialty, specialtyDefinitionOf } from '../../employeesEngine';
 import { specialtiesForSlot, totalPostCount } from '../../buildingsEngine';
 import { formatMoney } from '../../currency';
@@ -15,11 +22,40 @@ interface FacilityRowProps {
   onAssignEmployee: (employeeId: string, buildingId: AuxiliaryBuildingState['id'] | null, slotIndex: number) => void;
 }
 
+function formatBuildingEffect(effects: Pick<BuildingWeeklyEffect, 'upkeep' | 'venueRevenueBonusPercent' | 'qualityBonusPercent' | 'speedBonusPercent' | 'riskReductionBonusPercent'>): string {
+  const parts: string[] = [];
+  if (effects.upkeep) parts.push(`содержание -${formatMoney(effects.upkeep)}/нед.`);
+  if (effects.venueRevenueBonusPercent) parts.push(`выручка +${effects.venueRevenueBonusPercent}%`);
+  if (effects.qualityBonusPercent) parts.push(`качество +${effects.qualityBonusPercent}%`);
+  if (effects.speedBonusPercent) parts.push(`скорость +${effects.speedBonusPercent}%`);
+  if (effects.riskReductionBonusPercent) parts.push(`риск -${effects.riskReductionBonusPercent}%`);
+  return parts.join(' · ') || 'без прямых экономических эффектов';
+}
+
+function statusLabel(status: BuildingOperationalStatus): string {
+  if (status === 'unbuilt') return 'Не построено';
+  if (status === 'unstaffed') return 'Нет сотрудника';
+  return 'Работает';
+}
+
 export function FacilityRow({ building, definition, employees, funds, onBuildOrUpgrade, onAssignEmployee }: FacilityRowProps) {
   const status = getBuildingStatus(building, employees);
   const cost = getBuildingActionCost(building);
   const isBuilt = building.level > 0;
+  const maxLevel = building.level >= definition.maxLevel;
   const slotCount = totalPostCount(definition);
+  const weeks = buildingActionWeeks(building);
+  const currentEffects = isBuilt ? calculateBuildingWeeklyEffects([building], employees) : null;
+  const nextLevelEffects: BuildingWeeklyEffect = maxLevel ? {} : (definition.weeklyEffectsByLevel[building.level + 1] ?? {});
+  const actionLabel = !isBuilt ? 'Построить' : maxLevel ? 'Максимальный уровень' : 'Улучшить';
+  const effect = definition.effectDescriptions[Math.min(building.level, definition.maxLevel)];
+  const disabledReason = cost !== null && funds < cost ? 'Недостаточно средств' : null;
+  const staffingWarning = isBuilt && status === 'unstaffed' ? 'Не хватает штата: обязательные посты не besetzt.' : null;
+  const hasIncompatibleAssignment = building.assignedEmployeeIds.some((id, index) => {
+    const employee = employees.find(item => item.id === id);
+    if (!employee) return false;
+    return !checkPostCompatibility(employee, building, index).compatible;
+  });
   const availableEmployeesForSlot = (slotIndex: number) => employees.filter(employee =>
     employee.status === 'active'
     && specialtiesForSlot(definition, slotIndex).includes(employee.specialty)
@@ -27,10 +63,6 @@ export function FacilityRow({ building, definition, employees, funds, onBuildOrU
     && (!employee.assignedBuildingId || employee.assignedBuildingId === building.id)
     && !building.assignedEmployeeIds.some((id, index) => id === employee.id && index !== slotIndex)
   );
-  const actionLabel = !isBuilt ? 'Построить' : cost !== null ? 'Улучшить' : 'Максимальный уровень';
-  const effect = definition.effectDescriptions[Math.min(building.level, definition.maxLevel)];
-  const disabledReason = cost !== null && funds < cost ? 'Недостаточно средств' : null;
-  const statusLabel = status === 'unbuilt' ? 'Не построено' : status === 'unstaffed' ? 'Нет сотрудника' : 'Работает';
 
   return (
     <article className={`grid gap-4 border-b border-slate-800/70 py-4 last:border-0 md:grid-cols-[minmax(0,1fr)_minmax(14rem,0.8fr)_auto] md:items-center ${status === 'unstaffed' ? 'bg-amber-500/[0.035]' : ''}`}>
@@ -41,13 +73,25 @@ export function FacilityRow({ building, definition, employees, funds, onBuildOrU
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <h4 className="font-semibold text-white">{definition.name}</h4>
               <span className={`text-[10px] font-semibold uppercase ${status === 'operating' ? 'text-emerald-300' : status === 'unstaffed' ? 'text-amber-300' : 'text-slate-500'}`}>
-                {statusLabel}
+                {statusLabel(status)}
               </span>
+              {staffingWarning && <span className="text-[10px] font-semibold uppercase text-red-300">Не в штате</span>}
             </div>
             <p className="mt-1 text-xs leading-relaxed text-slate-400">{definition.shortDescription}</p>
             <p className="mt-1 text-xs font-mono text-slate-300">
-              {isBuilt ? `Уровень ${building.level} · ${effect}` : 'Уровень 0 · здание ещё не построено'}
+              {isBuilt
+                ? `Уровень ${building.level} · ${effect}${currentEffects ? ` · сейчас: ${formatBuildingEffect(currentEffects)}` : ''}`
+                : 'Уровень 0 · здание ещё не построено'
+              }
             </p>
+            {cost !== null && !maxLevel && (
+              <p className="mt-1 text-[10px] text-slate-400">
+                После улучшения (уровень {building.level + 1}): {formatBuildingEffect(nextLevelEffects)}{weeks > 0 ? ` · ${weeks} нед.` : ''} · ${formatMoney(cost)}
+              </p>
+            )}
+            {hasIncompatibleAssignment && (
+              <p className="mt-1 text-[10px] text-red-300">Назначен сотрудник с несовместимой специальностью — снимите с поста.</p>
+            )}
           </div>
         </div>
       </div>
@@ -59,8 +103,6 @@ export function FacilityRow({ building, definition, employees, funds, onBuildOrU
             const availableEmployees = availableEmployeesForSlot(slotIndex);
             const optionalSlot = slotIndex >= definition.requiredEmployees;
             const selectId = `facility-employee-${building.id}${slotIndex === 0 ? '' : `-${slotIndex}`}`;
-            // A slot can be gender-locked (госпожа / мастер); name the required role
-            // and its sex so the player knows who to post.
             const slotSpecialties = specialtiesForSlot(definition, slotIndex);
             const lockedRole = slotSpecialties.length === 1 ? specialtyDefinitionOf(slotSpecialties[0]).role : null;
             const lockNote = slotSpecialties.length === 1 ? genderLockNote(slotSpecialties[0]) : null;
@@ -97,15 +139,16 @@ export function FacilityRow({ building, definition, employees, funds, onBuildOrU
           <button
             type="button"
             onClick={() => onBuildOrUpgrade(building.id)}
-            disabled={funds < cost}
+            disabled={funds < cost || maxLevel}
             className="min-h-10 rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-amber-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
           >
-            {actionLabel} · {formatMoney(cost)}
+            {actionLabel} · {formatMoney(cost)}{weeks > 0 ? ` · ${weeks} нед.` : ''}
           </button>
         ) : (
           <span className="text-xs text-slate-500">Максимальный уровень</span>
         )}
         {disabledReason && <span className="text-[10px] text-red-300">{disabledReason}</span>}
+        {staffingWarning && <span className="text-[10px] text-amber-300">{staffingWarning}</span>}
       </div>
     </article>
   );

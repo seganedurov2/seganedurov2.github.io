@@ -74,6 +74,10 @@ export interface AuxiliaryBuildingState {
   level: number; // 0 means not built
   /** Slot-indexed posts; a null entry marks a vacated slot the weekly rollover emptied. */
   assignedEmployeeIds: (string | null)[];
+  /** 0.6.7: save-compatible timed upgrade progress (weeks remaining). Omitted in old saves. */
+  upgradeWeeksRemaining?: number;
+  /** 0.6.7: target level for an in-progress timed upgrade. Omitted in old saves. */
+  upgradeTargetLevel?: number;
 }
 
 export interface BuildingWeeklyEffects {
@@ -105,6 +109,16 @@ export interface BuildingWeeklyEffects {
   bdsmEscapeReduction: number;
   /** Submission gained each week by captives held at the house under that instructor. */
   bdsmTraining: number;
+  /** 0.6.7: weekly upkeep charged for built/operating auxiliary buildings (AX). */
+  buildingsUpkeep: number;
+  /** 0.6.7: additive venue revenue modifier from staffed buildings/specializations (% points, 0..N). */
+  venueRevenueBonusPercent: number;
+  /** 0.6.7: additive quality/output modifier (% points). */
+  qualityBonusPercent: number;
+  /** 0.6.7: additive operational speed modifier (% points). */
+  speedBonusPercent: number;
+  /** 0.6.7: additive risk reduction modifier (% points) aggregated across buildings/specializations. */
+  riskReductionBonusPercent: number;
   operationalBuildingIds: BuildingId[];
 }
 

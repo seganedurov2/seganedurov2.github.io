@@ -8,7 +8,7 @@ import type {
   EmployeeGender,
   EmployeeSpecialty
 } from './expansionTypes';
-import { fitsSpecialty, requiredGenderForSpecialty } from './employeesEngine';
+import { fitsSpecialty, requiredGenderForSpecialty, specialtyDefinitionOf, specializationWeeklyEffects } from './employeesEngine';
 export interface BuildingDefinition {
   id: BuildingId;
   name: string;
@@ -24,6 +24,10 @@ export interface BuildingDefinition {
   requiredEmployees: number;
   constructionCost: number;
   upgradeCosts: number[]; // index 0 unused; index N is the cost to upgrade level N to N+1
+  /** Weeks to build from scratch; 0 (omitted in old saves) means instant. */
+  constructionWeeks?: number;
+  /** Weeks per upgrade level; 0 means instant. */
+  upgradeWeeks?: number;
   maxLevel: number;
   effectDescriptions: string[]; // index matches building level
   weeklyEffectsByLevel: Record<number, BuildingWeeklyEffect>;
@@ -55,6 +59,16 @@ export interface BuildingWeeklyEffect {
   bdsmEscapeReduction?: number;
   /** BDSM Room level: submission gained per week by captives trained there. */
   bdsmTraining?: number;
+  /** 0.6.7: weekly upkeep (AX) at this building level. */
+  upkeep?: number;
+  /** 0.6.7: additive venue revenue modifier (% points) at this level. */
+  venueRevenueBonusPercent?: number;
+  /** 0.6.7: additive quality/output modifier (% points). */
+  qualityBonusPercent?: number;
+  /** 0.6.7: additive speed modifier (% points). */
+  speedBonusPercent?: number;
+  /** 0.6.7: additive risk reduction (% points). */
+  riskReductionBonusPercent?: number;
 }
 
 export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
@@ -66,6 +80,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 18000,
     upgradeCosts: [0, 12000, 22000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -74,9 +90,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       '+7 опыта в неделю сотрудникам компании.'
     ],
     weeklyEffectsByLevel: {
-      1: { employeeTrainingBonus: 3 },
-      2: { employeeTrainingBonus: 5 },
-      3: { employeeTrainingBonus: 7 }
+      1: { employeeTrainingBonus: 3, speedBonusPercent: 5, upkeep: 100 },
+      2: { employeeTrainingBonus: 5, speedBonusPercent: 10, upkeep: 200 },
+      3: { employeeTrainingBonus: 7, speedBonusPercent: 15, upkeep: 300 }
     }
   },
   {
@@ -87,6 +103,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 24000,
     upgradeCosts: [0, 15000, 26000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построен.',
@@ -95,9 +113,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       '+3 к недельному изменению морали сотрудников.'
     ],
     weeklyEffectsByLevel: {
-      1: { employeeMoraleBonus: 1 },
-      2: { employeeMoraleBonus: 2 },
-      3: { employeeMoraleBonus: 3 }
+      1: { employeeMoraleBonus: 1, speedBonusPercent: 5, upkeep: 150 },
+      2: { employeeMoraleBonus: 2, speedBonusPercent: 10, upkeep: 250 },
+      3: { employeeMoraleBonus: 3, speedBonusPercent: 15, upkeep: 350 }
     }
   },
   {
@@ -108,6 +126,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 28000,
     upgradeCosts: [0, 18000, 30000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -116,9 +136,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       '+6 здоровья в неделю персонажам компании.'
     ],
     weeklyEffectsByLevel: {
-      1: { rosterHealthRecovery: 2 },
-      2: { rosterHealthRecovery: 4 },
-      3: { rosterHealthRecovery: 6 }
+      1: { rosterHealthRecovery: 2, qualityBonusPercent: 5, upkeep: 200 },
+      2: { rosterHealthRecovery: 4, qualityBonusPercent: 10, upkeep: 300 },
+      3: { rosterHealthRecovery: 6, qualityBonusPercent: 15, upkeep: 400 }
     }
   },
   {
@@ -130,6 +150,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 2,
     constructionCost: 45000,
     upgradeCosts: [0, 30000, 52000],
+    constructionWeeks: 3,
+    upgradeWeeks: 3,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -138,9 +160,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       'Уход +32 очка качества, открыта реанимационная палата, восстановление 2–4 недели.'
     ],
     weeklyEffectsByLevel: {
-      1: { nurseBonus: 4, midwifeBonus: 6 },
-      2: { nurseBonus: 8, midwifeBonus: 12 },
-      3: { nurseBonus: 12, midwifeBonus: 20 }
+      1: { nurseBonus: 4, midwifeBonus: 6, qualityBonusPercent: 10, upkeep: 300 },
+      2: { nurseBonus: 8, midwifeBonus: 12, qualityBonusPercent: 20, upkeep: 500 },
+      3: { nurseBonus: 12, midwifeBonus: 20, qualityBonusPercent: 32, upkeep: 700 }
     }
   },
   {
@@ -151,6 +173,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 22000,
     upgradeCosts: [0, 16000, 28000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -159,9 +183,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       '3 сопровождающих в экипаже каждой поездки; риск нападения −25 п.п., шанс победы в бою +12 п.п.'
     ],
     weeklyEffectsByLevel: {
-      1: { escortSlots: 1 },
-      2: { escortSlots: 2, raidRiskReduction: 12, raidVictoryBonus: 6 },
-      3: { escortSlots: 3, raidRiskReduction: 25, raidVictoryBonus: 12 }
+      1: { escortSlots: 1, riskReductionBonusPercent: 4, upkeep: 150 },
+      2: { escortSlots: 2, raidRiskReduction: 12, raidVictoryBonus: 6, riskReductionBonusPercent: 8, upkeep: 250 },
+      3: { escortSlots: 3, raidRiskReduction: 25, raidVictoryBonus: 12, riskReductionBonusPercent: 12, upkeep: 350 }
     }
   },
   {
@@ -172,6 +196,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 20000,
     upgradeCosts: [0, 14000, 26000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -180,9 +206,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       '3 охранника на смене: шанс побега −24 п.п.'
     ],
     weeklyEffectsByLevel: {
-      1: { guardPosts: 1 },
-      2: { guardPosts: 2 },
-      3: { guardPosts: 3 }
+      1: { guardPosts: 1, riskReductionBonusPercent: 4, upkeep: 120 },
+      2: { guardPosts: 2, riskReductionBonusPercent: 8, upkeep: 240 },
+      3: { guardPosts: 3, riskReductionBonusPercent: 12, upkeep: 360 }
     }
   },
   {
@@ -194,6 +220,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 2,
     constructionCost: 34000,
     upgradeCosts: [0, 20000, 36000],
+    constructionWeeks: 3,
+    upgradeWeeks: 3,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -202,9 +230,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       'Полный режим: +6 покорности в неделю, риск побега −22 п.п.'
     ],
     weeklyEffectsByLevel: {
-      1: { bdsmEscapeReduction: 8, bdsmTraining: 2 },
-      2: { bdsmEscapeReduction: 15, bdsmTraining: 4 },
-      3: { bdsmEscapeReduction: 22, bdsmTraining: 6 }
+      1: { bdsmEscapeReduction: 8, bdsmTraining: 2, riskReductionBonusPercent: 6, upkeep: 180 },
+      2: { bdsmEscapeReduction: 15, bdsmTraining: 4, riskReductionBonusPercent: 12, upkeep: 320 },
+      3: { bdsmEscapeReduction: 22, bdsmTraining: 6, riskReductionBonusPercent: 18, upkeep: 460 }
     }
   },
   {
@@ -215,6 +243,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 26000,
     upgradeCosts: [0, 17000, 30000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -223,9 +253,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       'Главный герой теряет на 10 очков истощения меньше в неделю.'
     ],
     weeklyEffectsByLevel: {
-      1: { leadershipRelief: 3 },
-      2: { leadershipRelief: 6 },
-      3: { leadershipRelief: 10 }
+      1: { leadershipRelief: 3, speedBonusPercent: 5, upkeep: 140 },
+      2: { leadershipRelief: 6, speedBonusPercent: 10, upkeep: 260 },
+      3: { leadershipRelief: 10, speedBonusPercent: 15, upkeep: 380 }
     }
   },
   {
@@ -237,6 +267,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 32000,
     upgradeCosts: [0, 21000, 36000],
+    constructionWeeks: 3,
+    upgradeWeeks: 3,
     maxLevel: 3,
     effectDescriptions: [
       'Не построен.',
@@ -245,9 +277,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       'Аукционист: +15% к выручке от продажи товаров.'
     ],
     weeklyEffectsByLevel: {
-      1: { auctioneerSaleBonus: 5 },
-      2: { auctioneerSaleBonus: 10 },
-      3: { auctioneerSaleBonus: 15 }
+      1: { auctioneerSaleBonus: 5, venueRevenueBonusPercent: 5, upkeep: 200 },
+      2: { auctioneerSaleBonus: 10, venueRevenueBonusPercent: 10, upkeep: 350 },
+      3: { auctioneerSaleBonus: 15, venueRevenueBonusPercent: 15, upkeep: 500 }
     }
   },
   {
@@ -258,6 +290,8 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
     requiredEmployees: 1,
     constructionCost: 30000,
     upgradeCosts: [0, 19000, 34000],
+    constructionWeeks: 2,
+    upgradeWeeks: 2,
     maxLevel: 3,
     effectDescriptions: [
       'Не построена.',
@@ -266,9 +300,9 @@ export const BUILDING_DEFINITIONS: BuildingDefinition[] = [
       'Риск скандала по сделкам с пленными −18 п.п.'
     ],
     weeklyEffectsByLevel: {
-      1: { scandalRiskReduction: 5 },
-      2: { scandalRiskReduction: 10 },
-      3: { scandalRiskReduction: 18 }
+      1: { scandalRiskReduction: 5, riskReductionBonusPercent: 6, upkeep: 160 },
+      2: { scandalRiskReduction: 10, riskReductionBonusPercent: 12, upkeep: 280 },
+      3: { scandalRiskReduction: 18, riskReductionBonusPercent: 18, upkeep: 400 }
     }
   }
 ];
@@ -319,6 +353,28 @@ export function genderLockNote(specialty: EmployeeSpecialty): string | null {
   return required === 'women' ? 'только женщина' : 'только мужчина';
 }
 
+/** Возможность занять конкретный пост: специальность, пол, активный статус. */
+export interface PostCompatibility {
+  compatible: boolean;
+  reason: string | null;
+}
+
+export function checkPostCompatibility(
+  employee: Employee,
+  building: AuxiliaryBuildingState,
+  slotIndex: number
+): PostCompatibility {
+  const definition = getBuildingDefinition(building.id);
+  const accepted = specialtiesForSlot(definition, slotIndex);
+  if (!accepted.includes(employee.specialty)) {
+    return { compatible: false, reason: `Требуется специальность: ${accepted.map(specialty => specialtyDefinitionOf(specialty).label).join(' / ')}.` };
+  }
+  if (!fitsSpecialty(employee.specialty, employee.gender)) {
+    return { compatible: false, reason: `Пост «${specialtyDefinitionOf(employee.specialty).role}» ${genderLockNote(employee.specialty)}.` };
+  }
+  return { compatible: true, reason: null };
+}
+
 export function getCompatibleEmployees(
   building: AuxiliaryBuildingState,
   employees: Employee[],
@@ -336,11 +392,71 @@ export function getCompatibleEmployees(
   );
 }
 
+export function buildingActionWeeks(building: AuxiliaryBuildingState): number {
+  const definition = getBuildingDefinition(building.id);
+  if (building.level <= 0) return Math.max(0, Math.floor(definition.constructionWeeks ?? 0));
+  if (building.level >= definition.maxLevel) return 0;
+  return Math.max(0, Math.floor(definition.upgradeWeeks ?? 0));
+}
+
 export function getBuildingActionCost(building: AuxiliaryBuildingState): number | null {
   const definition = getBuildingDefinition(building.id);
   if (building.level <= 0) return definition.constructionCost;
   if (building.level >= definition.maxLevel) return null;
   return definition.upgradeCosts[building.level] ?? null;
+}
+
+export interface BuildingUpgradeStartResult {
+  buildings: AuxiliaryBuildingState[];
+  cost: number;
+  started: boolean;
+  completed: boolean;
+  weeks: number;
+  targetLevel: number;
+}
+
+export function startBuildingUpgrade(
+  buildings: AuxiliaryBuildingState[],
+  buildingId: BuildingId
+): BuildingUpgradeStartResult | null {
+  const building = buildings.find(item => item.id === buildingId);
+  if (!building) return null;
+  if ((building.upgradeWeeksRemaining ?? 0) > 0) return null;
+  const cost = getBuildingActionCost(building);
+  if (cost === null) return null;
+  const targetLevel = building.level + 1;
+  const weeks = buildingActionWeeks(building);
+  if (weeks <= 0) {
+    return {
+      buildings: buildings.map(item => item.id === buildingId ? { ...item, level: targetLevel, upgradeWeeksRemaining: 0, upgradeTargetLevel: undefined } : item),
+      cost, started: false, completed: true, weeks: 0, targetLevel
+    };
+  }
+  return {
+    buildings: buildings.map(item => item.id === buildingId ? { ...item, upgradeWeeksRemaining: weeks, upgradeTargetLevel: targetLevel } : item),
+    cost, started: true, completed: false, weeks, targetLevel
+  };
+}
+
+export interface BuildingUpgradeAdvanceResult {
+  buildings: AuxiliaryBuildingState[];
+  completedIds: BuildingId[];
+}
+
+export function advanceBuildingUpgrades(buildings: AuxiliaryBuildingState[]): BuildingUpgradeAdvanceResult {
+  const completedIds: BuildingId[] = [];
+  const next = buildings.map(item => {
+    const remaining = Math.max(0, Math.floor(item.upgradeWeeksRemaining ?? 0));
+    if (remaining <= 0) return item.upgradeWeeksRemaining ? { ...item, upgradeWeeksRemaining: 0, upgradeTargetLevel: undefined } : item;
+    if (remaining <= 1) {
+      const definition = getBuildingDefinition(item.id);
+      const target = Math.min(definition.maxLevel, Math.max(item.level + 1, Math.floor(item.upgradeTargetLevel ?? item.level + 1)));
+      completedIds.push(item.id);
+      return { ...item, level: target, upgradeWeeksRemaining: 0, upgradeTargetLevel: undefined };
+    }
+    return { ...item, upgradeWeeksRemaining: remaining - 1 };
+  });
+  return { buildings: next, completedIds };
 }
 
 export function calculateBuildingWeeklyEffects(
@@ -362,6 +478,11 @@ export function calculateBuildingWeeklyEffects(
     bdsmEscapeReduction: 0,
     bdsmTraining: 0,
     auctioneerSaleBonus: 0,
+    buildingsUpkeep: 0,
+    venueRevenueBonusPercent: 0,
+    qualityBonusPercent: 0,
+    speedBonusPercent: 0,
+    riskReductionBonusPercent: 0,
     operationalBuildingIds: []
   };
 
@@ -383,6 +504,11 @@ export function calculateBuildingWeeklyEffects(
     effects.midwifeBonus += levelEffects.midwifeBonus ?? 0;
     effects.bdsmEscapeReduction += levelEffects.bdsmEscapeReduction ?? 0;
     effects.bdsmTraining += levelEffects.bdsmTraining ?? 0;
+    effects.buildingsUpkeep += levelEffects.upkeep ?? 0;
+    effects.venueRevenueBonusPercent += levelEffects.venueRevenueBonusPercent ?? 0;
+    effects.qualityBonusPercent += levelEffects.qualityBonusPercent ?? 0;
+    effects.speedBonusPercent += levelEffects.speedBonusPercent ?? 0;
+    effects.riskReductionBonusPercent += levelEffects.riskReductionBonusPercent ?? 0;
 
     // Escort posts supply one crew member per open slot at the current level.
     const escorts = building.assignedEmployeeIds
@@ -392,6 +518,17 @@ export function calculateBuildingWeeklyEffects(
       for (let slot = 0; slot < (levelEffects.escortSlots ?? 0); slot++) {
         effects.escortCrew.push({ name: escort.name, skill: escort.skill, loyalty: escort.morale });
       }
+    }
+    // 0.6.7 specialization matrix: staffed posts contribute their role effects once per staffed post.
+    for (const spec of building.assignedEmployeeIds
+      .map(id => employees.find(employee => employee.id === id))
+      .filter((employee): employee is Employee => Boolean(employee && employee.status === 'active'))
+      .map(employee => employee.specialty)) {
+      const s = specializationWeeklyEffects(spec);
+      effects.venueRevenueBonusPercent += s.venueRevenueBonusPercent ?? 0;
+      effects.qualityBonusPercent += s.qualityBonusPercent ?? 0;
+      effects.speedBonusPercent += s.speedBonusPercent ?? 0;
+      effects.riskReductionBonusPercent += s.riskReductionBonusPercent ?? 0;
     }
   }
 

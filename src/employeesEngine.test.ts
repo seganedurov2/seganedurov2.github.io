@@ -21,7 +21,8 @@ import {
   refreshEmployeeCandidates,
   requiredGenderForSpecialty,
   specialtyDefinitionOf,
-  specialtyWageRange
+  specialtyWageRange,
+  specializationWeeklyEffects
 } from './employeesEngine';
 import type { Employee, EmployeeSpecialty } from './expansionTypes';
 import { BUILDING_DEFINITIONS } from './buildingsEngine';
@@ -218,5 +219,45 @@ describe('constant integrity', () => {
 
   it('IDs array length matches Record keys', () => {
     expect(EMPLOYEE_SPECIALTY_IDS.length).toBe(Object.keys(EMPLOYEE_SPECIALTIES).length);
+  });
+});
+
+describe('specialization matrix', () => {
+  it('gives every specialty finite numeric effects', () => {
+    for (const specialty of EMPLOYEE_SPECIALTY_IDS) {
+      const effects = specializationWeeklyEffects(specialty);
+      expect(Number.isFinite(effects.venueRevenueBonusPercent)).toBe(true);
+      expect(Number.isFinite(effects.qualityBonusPercent)).toBe(true);
+      expect(Number.isFinite(effects.speedBonusPercent)).toBe(true);
+      expect(Number.isFinite(effects.riskReductionBonusPercent)).toBe(true);
+    }
+  });
+
+  it('assigns revenue to trade roles, risk reduction to security roles', () => {
+    expect(specializationWeeklyEffects('auctioneer').venueRevenueBonusPercent).toBeGreaterThan(0);
+    expect(specializationWeeklyEffects('financier').venueRevenueBonusPercent).toBeGreaterThan(0);
+    expect(specializationWeeklyEffects('guard').riskReductionBonusPercent).toBeGreaterThan(0);
+    expect(specializationWeeklyEffects('lawyer').riskReductionBonusPercent).toBeGreaterThan(0);
+    expect(specializationWeeklyEffects('teacher').speedBonusPercent).toBeGreaterThan(0);
+    expect(specializationWeeklyEffects('clinician').qualityBonusPercent).toBeGreaterThan(0);
+  });
+
+  it('returns zeros for an unknown specialty', () => {
+    expect(specializationWeeklyEffects('no_such_role' as EmployeeSpecialty)).toEqual({
+      venueRevenueBonusPercent: 0,
+      qualityBonusPercent: 0,
+      speedBonusPercent: 0,
+      riskReductionBonusPercent: 0
+    });
+  });
+});
+
+describe('hiring quote edge cases', () => {
+  it('is affordable exactly at cost and not below it', () => {
+    const cost = nextHiringSlotCost(BASE_EMPLOYEE_SLOTS);
+    expect(quoteHiringSlot(BASE_EMPLOYEE_SLOTS, cost).affordable).toBe(true);
+    expect(quoteHiringSlot(BASE_EMPLOYEE_SLOTS, cost - 1).affordable).toBe(false);
+    expect(quoteHiringSlot(BASE_EMPLOYEE_SLOTS, cost).slotsAfter).toBe(BASE_EMPLOYEE_SLOTS + 1);
+    expect(quoteHiringSlot(BASE_EMPLOYEE_SLOTS, cost).upkeep).toBe(HIRING_SLOT_UPKEEP);
   });
 });

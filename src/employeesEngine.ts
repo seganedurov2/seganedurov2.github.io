@@ -142,6 +142,51 @@ export function specialtyWageRange(specialty: EmployeeSpecialty): [number, numbe
 }
 
 /**
+ * Недельный эффект одного besetzt поста специальности (в процентных пунктах):
+ * выручка, качество, скорость, снижение риска.
+ */
+export interface SpecializationWeeklyEffects {
+  venueRevenueBonusPercent?: number;
+  qualityBonusPercent?: number;
+  speedBonusPercent?: number;
+  riskReductionBonusPercent?: number;
+}
+
+/** Матрица «специальность → недельный эффект сотрудника на посту». */
+export const SPECIALIZATION_WEEKLY_EFFECTS: Record<EmployeeSpecialty, SpecializationWeeklyEffects> = {
+  teacher: { speedBonusPercent: 5 },
+  coach: { qualityBonusPercent: 4 },
+  clinician: { qualityBonusPercent: 8 },
+  nurse: { qualityBonusPercent: 5 },
+  midwife: { qualityBonusPercent: 5 },
+  psychologist: { riskReductionBonusPercent: 4 },
+  escort: { riskReductionBonusPercent: 6 },
+  guard: { riskReductionBonusPercent: 4 },
+  secretary: { speedBonusPercent: 6 },
+  lawyer: { riskReductionBonusPercent: 7 },
+  attendant: { qualityBonusPercent: 3 },
+  mistress: { riskReductionBonusPercent: 8 },
+  master: { riskReductionBonusPercent: 8 },
+  janitor: { qualityBonusPercent: 2 },
+  auctioneer: { venueRevenueBonusPercent: 7 },
+  appraiser: { venueRevenueBonusPercent: 5 },
+  dj: { venueRevenueBonusPercent: 6 },
+  administrator: { venueRevenueBonusPercent: 5, qualityBonusPercent: 3 },
+  financier: { venueRevenueBonusPercent: 9 }
+};
+
+/** Недельный эффект специальности с защитой от неизвестного ключа — всегда числа. */
+export function specializationWeeklyEffects(specialty: EmployeeSpecialty): SpecializationWeeklyEffects {
+  const effects = SPECIALIZATION_WEEKLY_EFFECTS[specialty];
+  return {
+    venueRevenueBonusPercent: effects?.venueRevenueBonusPercent ?? 0,
+    qualityBonusPercent: effects?.qualityBonusPercent ?? 0,
+    speedBonusPercent: effects?.speedBonusPercent ?? 0,
+    riskReductionBonusPercent: effects?.riskReductionBonusPercent ?? 0
+  };
+}
+
+/**
  * Midpoint of a specialty's wage range, rounded to the nearest pay grade
  * (multiple of 50). Pure: depends only on the specialty definition.
  */

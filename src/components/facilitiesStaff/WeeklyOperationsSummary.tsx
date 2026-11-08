@@ -1,6 +1,6 @@
 import type { Employee } from '../../expansionTypes';
 import type { AuxiliaryBuildingState } from '../../expansionTypes';
-import { getBuildingStatus } from '../../buildingsEngine';
+import { calculateBuildingWeeklyEffects, getBuildingStatus } from '../../buildingsEngine';
 import { getEmployeeWages } from '../../employeesEngine';
 import { formatMoney } from '../../currency';
 
@@ -13,6 +13,7 @@ interface WeeklyOperationsSummaryProps {
 export function WeeklyOperationsSummary({ week, employees, buildings }: WeeklyOperationsSummaryProps) {
   const wages = getEmployeeWages(employees);
   const unstaffed = buildings.filter(building => getBuildingStatus(building, employees) === 'unstaffed').length;
+  const buildingUpkeep = calculateBuildingWeeklyEffects(buildings, employees).buildingsUpkeep;
 
   return (
     <section aria-label="Обязательства на следующую неделю" className="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-slate-800 pb-5">
@@ -30,6 +31,12 @@ export function WeeklyOperationsSummary({ week, employees, buildings }: WeeklyOp
           {unstaffed}
         </div>
       </div>
+      {buildingUpkeep > 0 && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Содержание зданий</div>
+          <div className="mt-1 font-mono text-sm font-semibold text-amber-300">-{formatMoney(buildingUpkeep)}/нед.</div>
+        </div>
+      )}
     </section>
   );
 }

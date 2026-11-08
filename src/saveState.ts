@@ -777,10 +777,14 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
     const assignedEmployeeIds = rawAssignedIds
       .filter((id): id is string => typeof id === 'string' && employees.some(employee => employee.id === id))
       .slice(0, totalPostCount(getBuildingDefinition(defaultBuilding.id)));
+    const storedWeeksRemaining = Math.floor(Number(stored.upgradeWeeksRemaining) || 0);
+    const storedTargetLevel = Math.floor(Number(stored.upgradeTargetLevel) || 0);
     return {
       ...defaultBuilding,
       level: Math.max(0, Math.min(getBuildingDefinition(defaultBuilding.id).maxLevel, Math.floor(Number(stored.level) || 0))),
-      assignedEmployeeIds
+      assignedEmployeeIds,
+      ...(storedWeeksRemaining > 0 ? { upgradeWeeksRemaining: storedWeeksRemaining } : {}),
+      ...(storedTargetLevel > 0 ? { upgradeTargetLevel: Math.min(getBuildingDefinition(defaultBuilding.id).maxLevel, storedTargetLevel) } : {})
     };
   });
   const storedContracts = Array.isArray(parsed.contracts) ? parsed.contracts as ClientContract[] : cloneSampleContracts();
