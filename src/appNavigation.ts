@@ -1,6 +1,6 @@
 import {
   BedDouble, Brain, Building2, Bitcoin, FileText, Gavel, GraduationCap, Handshake, HeartPulse, Landmark, MessageSquare, Scissors, ShieldAlert, ShoppingCart,
-  Target, TrendingUp, Truck, UserPlus, Warehouse, Users, UserCog, UserRound, Music, Trophy, ShieldCheck, Zap, Gamepad2, AlertTriangle
+  Target, TrendingUp, Truck, UserPlus, Warehouse, Users, UserCog, UserRound, Music, Trophy, ShieldCheck, Zap, Gamepad2, AlertTriangle, Flame
 } from 'lucide-react';
 
 export type AppTab =
@@ -14,6 +14,7 @@ export type AppTab =
   | 'hospital'
   | 'rest_zone'
   | 'salon'
+  | 'buildings'
   | 'facilities_staff'
   | 'staff'
   | 'hiring'
@@ -35,6 +36,7 @@ export type AppTab =
   | 'mezzanine'
   | 'warehouse_mezzanine'
   | 'mezzanine_journal'
+  | 'boiler_house'
   | 'wasteland';
 
 export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingUp }[] = [
@@ -55,7 +57,8 @@ export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingU
   { id: 'hospital', label: 'Больница', icon: HeartPulse },
   { id: 'rest_zone', label: 'Зона отдыха', icon: BedDouble },
   { id: 'salon', label: 'Салон красоты', icon: Scissors },
-  { id: 'facilities_staff', label: 'Отдел кадров', icon: Building2 },
+  { id: 'buildings', label: 'Здания', icon: Building2 },
+  { id: 'facilities_staff', label: 'Отдел кадров', icon: Users },
   { id: 'staff', label: 'Персонал', icon: UserCog },
   { id: 'hiring', label: 'Найм сотрудников', icon: UserPlus },
   { id: 'slave_market', label: 'Рынок пленных', icon: Warehouse },
@@ -69,5 +72,6 @@ export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingU
   { id: 'warehouse_mezzanine', label: 'Складской мезонин', icon: Warehouse },
   { id: 'mezzanine_journal', label: 'Журнал «Информатика»', icon: FileText },
   { id: 'mezzanine', label: 'Мезонин', icon: Gamepad2 },
+  { id: 'boiler_house', label: 'Котельная', icon: Flame },
   { id: 'wasteland', label: 'Пустошь', icon: AlertTriangle }
 ];

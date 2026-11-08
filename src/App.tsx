@@ -55,6 +55,7 @@ import {
 import { FacilitiesStaffTab } from './components/facilitiesStaff/FacilitiesStaffTab';
 import { StaffTable } from './components/facilitiesStaff/StaffTable';
 import { HiringTab } from './components/hiring/HiringTab';
+import { BuildingsTab } from './components/facilitiesStaff/BuildingsTab';
 import { AuctionHouseTab } from './components/auctionHouse/AuctionHouseTab';
 import { CaptiveLotsMarketPanel } from './components/slaveMarket/CaptiveLotsMarketPanel';
 import { SupplyContractsPanel } from './components/slaveMarket/SupplyContractsPanel';
@@ -4905,17 +4906,25 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
           />
         )}
 
-        {/* FACILITIES & STAFF TAB */}
-        {activeTab === 'facilities_staff' && (
-<FacilitiesStaffTab
+        {/* BUILDINGS TAB */}
+        {activeTab === 'buildings' && (
+          <BuildingsTab
             week={gameState.week}
             funds={gameState.funds}
             employees={gameState.employees}
             buildings={gameState.auxiliaryBuildings}
-            candidates={gameState.employeeCandidates}
-            hiringSlots={gameState.hiringSlots}
             onBuildOrUpgrade={buildOrUpgradeBuilding}
             onAssignEmployee={assignEmployeeToBuilding}
+          />
+        )}
+
+        {/* FACILITIES & STAFF TAB */}
+        {activeTab === 'facilities_staff' && (
+<FacilitiesStaffTab
+            funds={gameState.funds}
+            employees={gameState.employees}
+            candidates={gameState.employeeCandidates}
+            hiringSlots={gameState.hiringSlots}
             onHireEmployee={hireEmployeeCandidate}
             onDismissEmployee={dismissEmployee}
             onRefreshCandidates={refreshCandidates}
