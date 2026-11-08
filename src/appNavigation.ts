@@ -2,6 +2,7 @@ import {
   BedDouble, Brain, Building2, Bitcoin, FileText, Gavel, GraduationCap, Handshake, HeartPulse, Landmark, MessageSquare, Scissors, ShieldAlert, ShoppingCart,
   Target, TrendingUp, Truck, UserPlus, Warehouse, Users, UserCog, UserRound, Music, Trophy, ShieldCheck, Zap, Gamepad2, AlertTriangle, Flame
 } from 'lucide-react';
+import { JOURNAL_TAB_LABEL } from './content/mezzanineJournal';
 
 export type AppTab =
   | 'dashboard'
@@ -70,7 +71,7 @@ export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingU
   { id: 'regions', label: 'Глобальные регионы', icon: Building2 },
   { id: 'meta', label: 'Достижения', icon: Trophy },
   { id: 'warehouse_mezzanine', label: 'Складской мезонин', icon: Warehouse },
-  { id: 'mezzanine_journal', label: 'Журнал «Информатика»', icon: FileText },
+  { id: 'mezzanine_journal', label: JOURNAL_TAB_LABEL, icon: FileText },
   { id: 'mezzanine', label: 'Мезонин', icon: Gamepad2 },
   { id: 'boiler_house', label: 'Котельная', icon: Flame },
   { id: 'wasteland', label: 'Пустошь', icon: AlertTriangle }

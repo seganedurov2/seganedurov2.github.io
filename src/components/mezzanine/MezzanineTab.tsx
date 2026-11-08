@@ -11,6 +11,7 @@ const CityBuilderView = lazy(() =>
   import('./CityBuilderView').then(module => ({ default: module.CityBuilderView }))
 );
 import { APP_NAVIGATION, type AppTab } from '../../appNavigation';
+import { JOURNAL_TAB_LABEL } from '../../content/mezzanineJournal';
 import { cityVisibleRect, drawBlock } from '../../mezzanineRender';
 import { generateMezzanineReport } from './MezzanineReport';
 import {
@@ -29,6 +30,13 @@ import {
 import type { CityPlanSave } from '../../cityPlanState';
 import type { CityEconomyState } from '../../cityEconomyState';
 import { resolveEscape } from '../../escapeStack';
+import {
+  applyPinchZoom,
+  createGestureState,
+  pointerDown,
+  pointerMove,
+  pointerUp
+} from '../../mapGestures';
 
 const REGION_CITIES: Record<string, { name: string; lat: number; lon: number; seed: number }[]> = {
   brest: [
@@ -120,7 +128,8 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
   const [sectionsOpen, setSectionsOpen] = useState(false);
   const [grid, setGrid] = useState<Heightmap | null>(null);
   const [inGame, setInGame] = useState<boolean>(true);
-  const [dragging, setDragging] = useState(false);
+  // One gesture state for mouse, pen and touch: one pointer pans, two pinch.
+  const gesture = useRef(createGestureState());
   const [pauseMenu, setPauseMenu] = useState(false);
   const [keymapOpen, setKeymapOpen] = useState(false);
   // Region / city / zoom / pan / seed — saved with the campaign so the hub
@@ -197,7 +206,7 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
     return { compliant, issues, recommendations, stuRequired };
   }
   const [centerPick, setCenterPick] = useState<MapCenter | null>(null);
-  const last = useRef({ x: 0, y: 0 });
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gen = useMemo(() => new TerrainGenerator(), []);
   const offsetRef = useRef(view.offset);
@@ -594,20 +603,29 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
     setInGame(true);
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    setDragging(true);
-    last.current = { x: e.clientX, y: e.clientY };
+  // Pointer events cover mouse, pen and touch with one code path. Each frame
+  // pans by the anchor movement and, with two fingers, zooms by the change in
+  // their distance, clamped to the wheel/button zoom range.
+  const handlePointerDown = (e: React.PointerEvent) => {
+    // Right/middle buttons are not a pan gesture.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    pointerDown(gesture.current, e.pointerId, { x: e.clientX, y: e.clientY });
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!dragging) return;
-    const dx = e.clientX - last.current.x;
-    const dy = e.clientY - last.current.y;
-    last.current = { x: e.clientX, y: e.clientY };
-    setView(prev => ({ ...prev, offset: { x: prev.offset.x + dx, y: prev.offset.y + dy * 0.2 } }));
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const frame = pointerMove(gesture.current, e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!frame) return;
+    setView(prev => ({
+      ...prev,
+      offset: { x: prev.offset.x + frame.dx, y: prev.offset.y + frame.dy * 0.2 },
+      gridSize: applyPinchZoom(prev.gridSize, frame.scale, clampTile)
+    }));
   };
 
-  const handleMouseUp = () => setDragging(false);
+  const handlePointerUp = (e: React.PointerEvent) => {
+    pointerUp(gesture.current, e.pointerId);
+  };
 
   // Full-screen 3D view. Rendered in place of the map so the overlay controls
   // (which assume the last game screen) can never swallow the pointer.
@@ -659,10 +677,13 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
     <div
       data-map-controls
       className="relative w-full overflow-hidden"
-      style={{ height: 'calc(100vh - 5rem)' }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
+      // touch-action: touch must not scroll or zoom the page while the map is
+      // being panned or pinched.
+      style={{ height: 'calc(100vh - 5rem)', touchAction: 'none' }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
     >
       {grid && (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -737,7 +758,7 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
                 className="flex items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition text-slate-300 hover:bg-slate-700 hover:text-white border-t border-slate-800 mt-1 pt-1"
               >
                 <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                <span className="truncate">Журнал «Информатика»</span>
+                <span className="truncate">{JOURNAL_TAB_LABEL}</span>
               </button>
             </div>
           )}

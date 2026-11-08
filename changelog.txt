@@ -93,6 +93,28 @@ LAST UPDATED: 2026-11-08
   TESTS
   * slaveContractsEngine.test: дедлайн/перевыполнение KPI (claimContractKpi, allowOverdelivery).
   * saveState.test: нормализация контрактов/standing/supply risk полей.
+
+[VERSION 0.4.4 - MEZZANINE JOURNAL] "Журнал «Информатика»"
+
+  КОНТЕНТ ЖУРНАЛА «ИНФОРМАТИКА» (без изменений формата сохранения)
+  * src/content/mezzanineJournal.ts: типизированный справочник рубрикатора
+    без привязки к campaña/сохранениям — JournalSectionId (15 рубрик),
+    JournalEntry по видам записи (статья, anuncиация, программа, отчёт о
+    конференции, рецензия, практическая разработка), JOURNAL_ENTRIES с
+    метаданными и внешними ссылками, полнотекстовые тексты не bundlesтся
+    (авторское право). Селекторы: getJournalSections, getEntriesBySection,
+    getSectionCounts, getTotalEntryCount, getEntryById, searchJournalEntries.
+    Каждая рубрика имеет записи; счётчики считаются из данных.
+  * MezzanineJournalTab: рендерит все 15 рубрик с реальными записями и
+    точными количествами, поиск по заголовку/авторам/аннотации/тегам,
+    раздел-специфичный рендеринг по виду записи, раскрытие/свертывание
+    аннотаций (aria-expanded), явные пустые состояния для пустых рубрик
+    и пустого поиска.
+  * Навигация: ярлык вкладки вынесен в JOURNAL_TAB_LABEL и переиспользуется
+    в appNavigation.ts (APP_NAVIGATION) и MezzanineTab (разделы +
+    пауза-меню); входы открывают одну и ту же вкладку, регрессий нет.
+  * release bookkeeping: changelog 0.4.4; Android versionName/versionCode
+    не меняются (отдельный этап подготовки релиза).
 [VERSION 0.6.5 - PREVIOUS RELEASE] "Рынок и спрос"
 
   MARKET & DEMAND
