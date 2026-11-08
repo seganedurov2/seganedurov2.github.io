@@ -30,6 +30,13 @@ import { formatMoney } from './currency';
 import { createDefaultMezzanineView, normalizeMezzanineViewState, type MezzanineViewState } from './mezzanineViewState';
 import { createCampaignScript, normalizeCampaignScript, type CampaignScriptState } from './campaignScript';
 import { createWarehouseState, normalizeWarehouseState, type WarehouseState } from './warehouseEngine';
+import { createBoilerHouseState, normalizeBoilerHouseState, type BoilerHouseState } from './boilerHouseEngine';
+import {
+  createInitialMarketDemand,
+  createInitialRegionalStanding,
+  normalizeDemandMap,
+  normalizeStandingMap
+} from './marketEconomyEngine';
 import { normalizeCityPlanSave, type CityPlanSave } from './cityPlanState';
 import {
   createCityEconomyState,
@@ -92,6 +99,8 @@ export interface ManagedCampaignState extends CampaignState {
   cityHubOpenedAt: number | null;
   /** Warehouse automatic mezzanine state (levels, capacity, automation). */
   warehouse: WarehouseState;
+  /** Котельная: котлы, топливо и температура теплового контура. */
+  boilerHouse: BoilerHouseState;
   /** Which act of the campaign script the run is in. */
   campaignScript: CampaignScriptState;
 }
@@ -219,6 +228,7 @@ export function createInitialCampaign(options: InitialCampaignOptions = {}): Man
     cityEconomy: createCityEconomyState(),
     cityHubOpenedAt: null,
     warehouse: createWarehouseState(),
+    boilerHouse: createBoilerHouseState(),
     campaignScript: createCampaignScript(week),
     log: [
       `Неделя ${week}: кампания успешно запущена.`,
@@ -227,8 +237,8 @@ export function createInitialCampaign(options: InitialCampaignOptions = {}): Man
         : 'Добро пожаловать в «Эмпориум», веб-версия. Объекты и система сотрудников готовы.'
     ],
     marketRefreshDone: false,
-    marketDemand: {},
-    regionalStanding: {},
+    marketDemand: createInitialMarketDemand(),
+    regionalStanding: createInitialRegionalStanding(),
     purchasedUpgrades: []
   } as ManagedCampaignState;
 }
@@ -292,8 +302,8 @@ function normalizeWeeklyReport(raw: unknown): WeeklyFinanceReport | null {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
   };
-  const revenueSum = num(revenue.venue) + num(revenue.caravans) + num(revenue.captureOps) + num(revenue.contracts) + num(revenue.salon) + num(revenue.city);
-  const expenseSum = num(expenses.wages) + num(expenses.hospital) + num(expenses.restZone) + num(expenses.staffSlots) + num(expenses.warehouse) + num(expenses.city);
+  const revenueSum = num(revenue.venue) + num(revenue.caravans) + num(revenue.captureOps) + num(revenue.contracts) + num(revenue.salon) + num(revenue.city) + num(revenue.boiler);
+  const expenseSum = num(expenses.wages) + num(expenses.hospital) + num(expenses.restZone) + num(expenses.staffSlots) + num(expenses.warehouse) + num(expenses.city) + num(expenses.boiler);
   return {
     week: Math.max(1, Math.floor(num(report.week))),
     revenue: {
@@ -302,7 +312,8 @@ function normalizeWeeklyReport(raw: unknown): WeeklyFinanceReport | null {
       captureOps: num(revenue.captureOps),
       contracts: num(revenue.contracts),
       salon: num(revenue.salon),
-      city: num(revenue.city)
+      city: num(revenue.city),
+      boiler: num(revenue.boiler)
     },
     expenses: {
       wages: num(expenses.wages),
@@ -311,7 +322,8 @@ function normalizeWeeklyReport(raw: unknown): WeeklyFinanceReport | null {
       staffSlots: num(expenses.staffSlots),
       loanPayment: num(expenses.loanPayment),
       warehouse: num(expenses.warehouse),
-      city: num(expenses.city)
+      city: num(expenses.city),
+      boiler: num(expenses.boiler)
     },
     netIncome: num(report.netIncome) || revenueSum - expenseSum,
     treasuryAfter: num(report.treasuryAfter)
@@ -322,7 +334,8 @@ const META_STAT_KEYS = [
   'totalRevenue', 'totalExpenses', 'totalNetIncome', 'peakFunds', 'peakWeek',
   'auctionsCompleted', 'auctionBestSale', 'caravansDispatched', 'caravansCompleted',
   'caravansLost', 'raidsSurvived', 'captureOpsCompleted', 'slavesAcquired',
-  'employeesHired', 'buildingsConstructed', 'loansTaken', 'loansRepaid', 'births'
+  'employeesHired', 'buildingsConstructed', 'loansTaken', 'loansRepaid', 'births',
+  'progressionItemsSold'
 ] as const;
 
 function normalizeMetaProgress(raw: unknown): MetaProgressState {
@@ -347,7 +360,8 @@ function normalizeMetaProgress(raw: unknown): MetaProgressState {
   const rawPrestige = isRecord(raw.prestige) ? raw.prestige : {};
   const prestige: PrestigeState = {
     level: Math.max(0, Math.floor(Number(rawPrestige.level)) || 0),
-    victories: Math.max(0, Math.floor(Number(rawPrestige.victories)) || 0)
+    victories: Math.max(0, Math.floor(Number(rawPrestige.victories)) || 0),
+    progressionPoints: Math.max(0, Math.floor(Number(rawPrestige.progressionPoints)) || 0)
   };
 
   const goalStatus = raw.goalStatus === 'victory' || raw.goalStatus === 'defeat'
@@ -597,7 +611,17 @@ function normalizeEmployee(employee: Employee): Employee {
   };
 }
 
-const SUPPLY_QUALITIES = ['low', 'medium', 'high'] as const;
+const SUPPLY_QUALITIES = ['low', 'medium', 'high', 'legendary'] as const;
+const SLAVE_QUALITIES = ['any', 'low', 'medium', 'high', 'legendary'] as const;
+const SLAVE_CONTRACT_CHANNELS = ['market', 'black_market'] as const;
+const SLAVE_CONTRACT_STATUSES = ['active', 'completed', 'failed'] as const;
+const DEMAND_TIERS = ['low', 'medium', 'high'] as const;
+
+const numInt = (value: unknown, fallback: number, min = -Infinity, max = Infinity) => {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+};
 
 /**
  * Normalizes a stored regional supply contract into the current buy-side shape.
@@ -614,10 +638,6 @@ function normalizeTradeSupplyContract(raw: Partial<TradeSupplyContract>): TradeS
   const quality = SUPPLY_QUALITIES.includes(raw.quality as typeof SUPPLY_QUALITIES[number])
     ? (raw.quality as TradeSupplyContract['quality'])
     : 'low';
-  const num = (value: unknown, fallback: number) => {
-    const parsed = Math.floor(Number(value));
-    return Number.isFinite(parsed) ? parsed : fallback;
-  };
   return {
     id: raw.id,
     channel: 'market',
@@ -626,21 +646,99 @@ function normalizeTradeSupplyContract(raw: Partial<TradeSupplyContract>): TradeS
     buyerName: typeof raw.buyerName === 'string' ? raw.buyerName : 'Региональный торговый дом',
     title: typeof raw.title === 'string' ? raw.title : `Поставка рабов из региона: ${regionName}`,
     description: typeof raw.description === 'string' ? raw.description : '',
-    caravansDelivered: num(raw.caravansDelivered, 0),
-    pricePerHead: num(raw.pricePerHead, 0),
-    weeklyQuantity: Math.max(1, num(raw.weeklyQuantity, 1)),
+    caravansDelivered: numInt(raw.caravansDelivered, 0, 0),
+    pricePerHead: numInt(raw.pricePerHead, 0, 0),
+    weeklyQuantity: Math.max(1, numInt(raw.weeklyQuantity, 1, 1)),
     quality,
     // A save without the flag predates signing; treat it as already signed so an
     // in-flight contract keeps working instead of locking the player out.
     signed: raw.signed !== false,
-    startWeek: num(raw.startWeek, 1),
-    termWeeks: Math.max(1, num(raw.termWeeks, 1)),
-    weeksRemaining: Math.max(0, num(raw.weeksRemaining, 0)),
-    purchasedThisWeek: Math.max(0, num(raw.purchasedThisWeek, 0)),
-    totalPurchased: Math.max(0, num(raw.totalPurchased, 0)),
-    totalSpent: Math.max(0, num(raw.totalSpent, 0)),
+    startWeek: numInt(raw.startWeek, 1, 1),
+    termWeeks: Math.max(1, numInt(raw.termWeeks, 1, 1)),
+    weeksRemaining: Math.max(0, numInt(raw.weeksRemaining, 0, 0)),
+    purchasedThisWeek: Math.max(0, numInt(raw.purchasedThisWeek, 0, 0)),
+    totalPurchased: Math.max(0, numInt(raw.totalPurchased, 0, 0)),
+    totalSpent: Math.max(0, numInt(raw.totalSpent, 0, 0)),
+    supplyRiskPercent: typeof raw.supplyRiskPercent === 'number' && Number.isFinite(raw.supplyRiskPercent) ? Math.max(0, Math.min(100, Math.round(raw.supplyRiskPercent))) : undefined,
+    lastRiskReason: typeof raw.lastRiskReason === 'string' ? raw.lastRiskReason.slice(0, 240) : undefined,
     status: raw.status === 'completed' ? 'completed' : 'active'
   };
+}
+
+function normalizeSlaveBuyerContract(raw: unknown): SlaveBuyerContract | null {
+  if (!isRecord(raw) || typeof raw.id !== 'string') return null;
+  const channel = SLAVE_CONTRACT_CHANNELS.includes(raw.channel as typeof SLAVE_CONTRACT_CHANNELS[number])
+    ? (raw.channel as SlaveBuyerContract['channel'])
+    : 'market';
+  const minQuality = SLAVE_QUALITIES.includes(raw.minQuality as typeof SLAVE_QUALITIES[number])
+    ? (raw.minQuality as SlaveBuyerContract['minQuality'])
+    : 'any';
+  const status = SLAVE_CONTRACT_STATUSES.includes(raw.status as typeof SLAVE_CONTRACT_STATUSES[number])
+    ? (raw.status as SlaveBuyerContract['status'])
+    : 'active';
+  const demandTier = DEMAND_TIERS.includes(raw.demandTier as typeof DEMAND_TIERS[number])
+    ? (raw.demandTier as SlaveBuyerContract['demandTier'])
+    : 'medium';
+  const quantityWanted = Math.max(1, numInt(raw.quantityWanted, 1, 1));
+  const overCap = Math.max(1, Math.ceil(quantityWanted * 0.5));
+  const quantityDelivered = Math.max(0, Math.min(quantityWanted, numInt(raw.quantityDelivered, 0, 0)));
+  const quantityOverDelivered = Math.max(0, Math.min(overCap, numInt(raw.quantityOverDelivered, 0, 0)));
+  const resolvedStatus = status === 'active' && quantityDelivered >= quantityWanted ? 'completed' : status;
+  const regionId = typeof raw.regionId === 'string' ? raw.regionId : '08_central_africa';
+  const regionName = typeof raw.regionName === 'string' ? raw.regionName : 'Неизвестный регион';
+  const weeksRemaining = Math.max(0, numInt(raw.weeksRemaining, 1, 0));
+  const termWeeks = Math.max(weeksRemaining, quantityWanted > 0 ? weeksRemaining : 1, numInt(raw.termWeeks, 0, 0) || weeksRemaining || 1);
+  const startWeek = numInt(raw.startWeek, 0, 0);
+  const pricePerHead = numInt(raw.pricePerHead, 5000, 0);
+  const deadlineWeek = numInt(raw.deadlineWeek, 0, 0);
+  return {
+    id: raw.id,
+    channel,
+    buyerName: typeof raw.buyerName === 'string' ? raw.buyerName : 'Неизвестный покупатель',
+    buyerType: typeof raw.buyerType === 'string' ? raw.buyerType : 'Покупатель',
+    title: typeof raw.title === 'string' ? raw.title : 'Контракт на поставку',
+    description: typeof raw.description === 'string' ? raw.description : '',
+    regionId,
+    regionName,
+    quantityWanted,
+    quantityDelivered,
+    minQuality,
+    pricePerHead,
+    demandTier,
+    sourcePriceBenchmark: numInt(raw.sourcePriceBenchmark, 1750, 0),
+    rewardReputation: numInt(raw.rewardReputation, 1, 0),
+    riskReputation: numInt(raw.riskReputation, 1, 0),
+    riskPercent: numInt(raw.riskPercent, channel === 'black_market' ? 25 : 8, 0, 100),
+    ...(startWeek > 0 ? { startWeek } : {}),
+    termWeeks,
+    failurePenalty: numInt(raw.failurePenalty, Math.round(pricePerHead * quantityWanted * (channel === 'black_market' ? 0.12 : 0.05)), 0),
+    completionBonusReputation: numInt(raw.completionBonusReputation, 0, 0),
+    ...(deadlineWeek > 0 ? { deadlineWeek } : (startWeek > 0 ? { deadlineWeek: startWeek + termWeeks } : {})),
+    quantityOverDelivered,
+    kpiOverdeliveryBonusPerHead: numInt(raw.kpiOverdeliveryBonusPerHead, Math.max(250, Math.round(pricePerHead * (channel === 'black_market' ? 0.18 : 0.12))), 0),
+    kpiDeadlineBonusReputation: numInt(raw.kpiDeadlineBonusReputation, 0, 0),
+    kpiDeadlineBonusMoney: numInt(raw.kpiDeadlineBonusMoney, 0, 0),
+    kpiBonusPaid: raw.kpiBonusPaid === true,
+    weeksRemaining,
+    status: resolvedStatus
+  };
+}
+
+function normalizeBuyerStandings(raw: unknown): StandingMap {
+  if (!isRecord(raw)) return {};
+  const out: StandingMap = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!isRecord(value) || typeof key !== 'string' || !key) continue;
+    const buyerType = typeof value.buyerType === 'string' && value.buyerType ? value.buyerType : key;
+    out[buyerType] = {
+      buyerType,
+      reputation: Math.max(0, Math.min(10, numInt(value.reputation, 0, 0, 10))),
+      scandals: Math.max(0, numInt(value.scandals, 0, 0)),
+      lockedUntilWeek: Math.max(0, numInt(value.lockedUntilWeek, 0, 0)),
+      lastActiveWeek: Math.max(0, numInt((value as any).lastActiveWeek, 0, 0)) || undefined
+    };
+  }
+  return out;
 }
 
 function normalizeMarketRequest(raw: unknown): MarketImprovementRequest | null {
@@ -750,8 +848,10 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
     stripClubUpgrades: { ...defaults.stripClubUpgrades, ...(parsed.stripClubUpgrades as Partial<ManagedCampaignState['stripClubUpgrades']> | undefined) },
     restZone: normalizeRestZone(parsed.restZone, roster, employees),
     contracts: storedContracts.map(contract => ({ ...contract, assignedOperativeIds: contract.assignedOperativeIds || [] })),
-    slaveContracts: Array.isArray(parsed.slaveContracts) ? parsed.slaveContracts : [],
-    buyerStandings: parsed.buyerStandings && typeof parsed.buyerStandings === 'object' ? parsed.buyerStandings : {},
+    slaveContracts: Array.isArray(parsed.slaveContracts)
+      ? parsed.slaveContracts.map(normalizeSlaveBuyerContract).filter((contract): contract is SlaveBuyerContract => contract !== null)
+      : [],
+    buyerStandings: normalizeBuyerStandings(parsed.buyerStandings),
     tradeSupplyContracts: Array.isArray(parsed.tradeSupplyContracts)
       ? (parsed.tradeSupplyContracts as Partial<TradeSupplyContract>[])
         .map(normalizeTradeSupplyContract)
@@ -762,6 +862,10 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
       ? parsed.reservedCaptiveLotIds.filter((id): id is string => typeof id === 'string')
       : [],
     auctionHouse: normalizeAuctionHouseState(parsed.auctionHouse),
+    // 0.6.5 «Рынок и спрос»: регионы с битым или чужим id отбрасываются,
+    // NaN/Infinity в спросе и влиянии не попадают в расчёты цен.
+    marketDemand: normalizeDemandMap(parsed.marketDemand),
+    regionalStanding: normalizeStandingMap(parsed.regionalStanding),
     venueRequests: {
       ...defaults.venueRequests,
       ...(parsed.venueRequests as Partial<ManagedCampaignState['venueRequests']> | undefined)
@@ -780,6 +884,7 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
       savedWeek
     ),
     warehouse: normalizeWarehouseState(parsed.warehouse),
+    boilerHouse: normalizeBoilerHouseState(parsed.boilerHouse),
     campaignScript: normalizeCampaignScript(parsed.campaignScript, savedWeek),
     log: Array.isArray(parsed.log) ? parsed.log.filter((entry): entry is string => typeof entry === 'string') : []
   } as ManagedCampaignState;

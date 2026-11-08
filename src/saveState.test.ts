@@ -80,9 +80,34 @@ describe('saveState meta-progress migration', () => {
     expect(migrated.metaProgress.stats.totalRevenue).toBe(5000);
     expect(migrated.metaProgress.stats.peakFunds).toBe(9999);
     expect(migrated.metaProgress.stats.auctionsCompleted).toBe(0);
-    expect(migrated.metaProgress.prestige).toEqual({ level: 2, victories: 1 });
+    expect(migrated.metaProgress.prestige).toEqual({ level: 2, victories: 1, progressionPoints: 0 });
     expect(migrated.metaProgress.goalStatus).toBe('victory');
     expect(migrated.metaProgress.endingWeek).toBe(100);
+  });
+
+  it('keeps regional market state and repairs broken demand/standing maps (0.6.5)', () => {
+    const campaign = createInitialCampaign({ fresh: true });
+    // Новая кампания: спрос и влияние есть для всех регионов рынка.
+    expect(campaign.marketDemand['05_middle_east']).toBe(1.4);
+    expect(campaign.regionalStanding['07_west_africa']).toBe(50);
+
+    const legacy = {
+      ...campaign,
+      marketDemand: { '01_north_america': 1.7, '03_western_europe': Number.NaN, '99_unknown': 1.3 },
+      regionalStanding: { '01_north_america': 64, '02_south_america': 'broken' }
+    };
+    const migrated = migrateCampaignState(JSON.parse(JSON.stringify(legacy)));
+    // NaN и мусор выпадают, известный регион сохраняется.
+    expect(migrated.marketDemand).toEqual({ '01_north_america': 1.7, '99_unknown': 1.3 });
+    expect(migrated.regionalStanding).toEqual({ '01_north_america': 64 });
+
+    // Сейв без поля вообще — пустые словари, без ошибок.
+    const withoutFields = { ...campaign } as Record<string, unknown>;
+    delete withoutFields.marketDemand;
+    delete withoutFields.regionalStanding;
+    const bare = migrateCampaignState(JSON.parse(JSON.stringify(withoutFields)));
+    expect(bare.marketDemand).toEqual({});
+    expect(bare.regionalStanding).toEqual({});
   });
 
   it('starts a new campaign with an empty mezzanine view', () => {
@@ -234,6 +259,72 @@ describe('saveState meta-progress migration', () => {
 
     expect(migrated.cityEconomy).toEqual({ schemaVersion: 1, lastReport: null });
     expect(migrated.cityHubOpenedAt).toBeNull();
+  });
+
+  it('normalizes broken slave contracts and buyer standings (0.6.6)', () => {
+    const campaign = createInitialCampaign({ fresh: true });
+    const broken = {
+      ...JSON.parse(JSON.stringify(campaign)),
+      slaveContracts: [
+        {
+          id: 'sc_old',
+          channel: 'market',
+          buyerType: 'Частное имение',
+          title: 'Old',
+          description: '',
+          regionId: '03_western_europe',
+          regionName: 'Western Europe',
+          quantityWanted: '3',
+          quantityDelivered: 99,
+          minQuality: 'legendary',
+          pricePerHead: 'not-a-number',
+          demandTier: 'bad',
+          rewardReputation: 2,
+          riskReputation: 3,
+          riskPercent: 999,
+          weeksRemaining: -5,
+          status: 'active'
+        },
+        null,
+        'garbage'
+      ],
+      buyerStandings: {
+        'Частное имение': { buyerType: 'Частное имение', reputation: 99, scandals: -2, lockedUntilWeek: '7' },
+        broken: 'x'
+      },
+      tradeSupplyContracts: [
+        { id: 'ts1', regionId: 'x', regionName: 'X', quality: 'legendary', weeklyQuantity: 0, pricePerHead: NaN }
+      ]
+    };
+    const migrated = migrateCampaignState(broken);
+    expect(migrated.slaveContracts).toHaveLength(1);
+    const sc = migrated.slaveContracts[0];
+    expect(sc.quantityWanted).toBe(3);
+    expect(sc.quantityDelivered).toBe(3); // clamped to wanted
+    expect(sc.pricePerHead).toBe(5000); // fallback
+    expect(sc.demandTier).toBe('medium');
+    expect(sc.riskPercent).toBe(100);
+    expect(sc.weeksRemaining).toBe(0);
+    expect(sc.status).toBe('completed');
+    expect(sc.minQuality).toBe('legendary');
+    expect(migrated.buyerStandings['Частное имение'].reputation).toBe(10);
+    expect(migrated.buyerStandings['Частное имение'].scandals).toBe(0);
+    expect(migrated.buyerStandings['Частное имение'].lockedUntilWeek).toBe(7);
+    expect(migrated.tradeSupplyContracts).toHaveLength(1);
+    expect(migrated.tradeSupplyContracts[0].quality).toBe('legendary');
+    expect(migrated.tradeSupplyContracts[0].weeklyQuantity).toBe(1);
+    expect(migrated.tradeSupplyContracts[0].supplyRiskPercent).toBeUndefined();
+    expect(migrated.tradeSupplyContracts[0].lastRiskReason).toBeUndefined();
+  });
+
+  it('normalizes 0.6.6 supply risk fields without breaking old saves', () => {
+    const campaign = createInitialCampaign({ fresh: true });
+    const migrated = migrateCampaignState({
+      ...JSON.parse(JSON.stringify(campaign)),
+      tradeSupplyContracts: [{ id: 'ts2', regionId: 'x', regionName: 'X', quality: 'high', weeklyQuantity: 2, pricePerHead: 1000, supplyRiskPercent: 999, lastRiskReason: 'x'.repeat(500) }]
+    });
+    expect(migrated.tradeSupplyContracts[0].supplyRiskPercent).toBe(100);
+    expect(migrated.tradeSupplyContracts[0].lastRiskReason?.length).toBe(240);
   });
 
   it('backfills the hub opening week for saves that already used the mezzanine', () => {

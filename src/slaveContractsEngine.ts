@@ -47,6 +47,26 @@ export interface SlaveBuyerContract {
   riskReputation: number;
   /** Percent chance the delivery blows up into a scandal/raid when fulfilled. */
   riskPercent: number;
+  /** Week the contract started (campaign week), for UI/progress. */
+  startWeek?: number;
+  /** Initial term in weeks. */
+  termWeeks?: number;
+  /** Failure penalty in AX paid from treasury when expired incomplete (0 = rep only). */
+  failurePenalty?: number;
+  /** Bonus reputation when fully completed (additive to rewardReputation in logs/UI). */
+  completionBonusReputation?: number;
+  /** Campaign week when the contract expires (KPI deadline). Optional for old saves. */
+  deadlineWeek?: number;
+  /** Extra captives delivered beyond quantityWanted (overdelivery KPI). Optional. */
+  quantityOverDelivered?: number;
+  /** AX bonus paid per overdelivered captive when KPI is claimed. Optional. */
+  kpiOverdeliveryBonusPerHead?: number;
+  /** Reputation bonus for meeting wanted on/before deadline. Optional. */
+  kpiDeadlineBonusReputation?: number;
+  /** AX bonus for meeting wanted on/before deadline. Optional. */
+  kpiDeadlineBonusMoney?: number;
+  /** True once KPI rewards (deadline/overdelivery stream) have been paid. Optional. */
+  kpiBonusPaid?: boolean;
   weeksRemaining: number;
   status: 'active' | 'completed' | 'failed';
 }
@@ -158,7 +178,7 @@ export function marketValueOf(char: Character): number {
 }
 
 /** Buyers that surface on the open Global Marketplace (plausible legal fronts). */
-const MARKET_BUYERS: { type: string; title: string; blurb: string }[] = [
+export const MARKET_BUYERS: { type: string; title: string; blurb: string }[] = [
   { type: 'Дипломатический дом', title: 'Заявка на постоянных домашних слуг', blurb: 'посольство, набирающее постоянных незаметных домашних слуг для дипломатической резиденции' },
   { type: 'Частное имение', title: 'Закупка рабочей силы для имения', blurb: 'закрытый магнат, обставляющий уединённое частное имение постоянной рабочей силой' },
   { type: 'Люксовая гостиничная группа', title: 'Соглашение о персонале курорта', blurb: 'заморский люксовый курорт в поисках обслуживающего экипажа по обезличенному контракту, не числящегося в штате' },
@@ -166,7 +186,7 @@ const MARKET_BUYERS: { type: string; title: string; blurb: string }[] = [
 ];
 
 /** Buyers that surface on the Black Market (discreet criminal buyers). */
-const BLACK_MARKET_BUYERS: { type: string; title: string; blurb: string }[] = [
+export const BLACK_MARKET_BUYERS: { type: string; title: string; blurb: string }[] = [
   { type: 'Подпольный аукционист', title: 'Заказ лота на частном аукционе', blurb: 'подпольный аукционист, собирающий лоты для секретной сети покупателей' },
   { type: 'Брокер картеля', title: 'Заказ рабочей силы для картеля', blurb: 'брокер картеля, скупающий расходный людской материал для удалённых производственных комплексов' },
   { type: 'Контрабандистский синдикат', title: 'Заказ по описи грузового трюма', blurb: 'контрабандистский синдикат, набивающий грузовой трюм человеческим товаром' },
@@ -229,24 +249,25 @@ function pickBuyerRegion(channel: SlaveContractChannel): string {
  */
 export function generateSlaveContract(
   channel: SlaveContractChannel,
-  /** Optional per-buyer-type standing (Idea 5) to improve prices & order size. */
-  standing = 0,
-  /** Aggregate effects of the global market improvements. */
-  effects: MarketImprovementEffects = NO_MARKET_EFFECTS
+  week = 1,
+  effects: MarketImprovementEffects = NO_MARKET_EFFECTS,
+  standings?: StandingMap
 ): SlaveBuyerContract {
   const isBlack = channel === 'black_market';
   const buyer = pick(isBlack ? BLACK_MARKET_BUYERS : MARKET_BUYERS);
   const regionId = pickBuyerRegion(channel);
   const regionName = regionLabel(regionId);
   const country = countryFor(regionId);
-
+  const standing = standings ? Math.max(0, Math.min(10, Number(getStanding(standings, buyer.type).reputation) || 0)) : 0;
   // Restrained standing bonus: 0..1 scaled by trusted deals, capped at +20%.
   const standingMultiplier = 1 + Math.min(0.2, standing * 0.04);
 
-  const quantityWanted = (isBlack
-    ? Math.floor(Math.random() * 3) + 2      // 2-4
-    : Math.floor(Math.random() * 2) + 1)     // 1-2
-    + effects.buyerQuantityBonus;
+  const quantityWanted = Math.max(1, Math.floor(Number(
+    (isBlack
+      ? Math.floor(Math.random() * 3) + 2      // 2-4
+      : Math.floor(Math.random() * 2) + 1)     // 1-2
+    + (Number.isFinite(effects.buyerQuantityBonus) ? effects.buyerQuantityBonus : 0)
+  ) || 1));
   const qualityRoll = Math.random();
   const regionDemand = REGION_SLAVE_DEMAND[regionId] ?? 0.4;
   let minQuality: SlaveBuyerContract['minQuality'];
@@ -262,16 +283,14 @@ export function generateSlaveContract(
     minQuality = 'legendary';
   }
 
-  // Price now derives from the buyer region's demand index and the quality the
-  // buyer is asking for. The black market adds a risk premium on top.
-  const pricedQuality: 'low' | 'medium' | 'high' | 'legendary' = minQuality === 'any' ? 'medium' : minQuality;
-  const basePrice = regionalSlavePrice(regionId, pricedQuality);
-  const channelMultiplier = isBlack ? 1.15 : 1.0;
-  const pricePerHead = Math.round(
-    basePrice * channelMultiplier * standingMultiplier * (0.92 + Math.random() * 0.16) * effects.buyerPriceMultiplier
-  );
-
-  // Benchmark the syndicate's source-region price so the UI can show the margin.
+  // Regional demand sets the per-head price: the market buys what the captive is
+  // "worth" there. Channel discount is smaller now (the arbitrage comes from the
+  // regional spread, not a raw 30-50% black-market haircut).
+  const tierForPrice: 'low' | 'medium' | 'high' | 'legendary' = minQuality === 'any' ? 'low' : minQuality;
+  const rawRegionalPrice = regionalSlavePrice(regionId, tierForPrice);
+  const channelMultiplier = isBlack ? 0.85 : 1.0;
+  const effectsMultiplier = 1 + Math.max(0, Number(effects.buyerPriceMultiplier || 0));
+  const pricePerHead = Math.max(1, Math.round(rawRegionalPrice * channelMultiplier * standingMultiplier * effectsMultiplier));
   const sourcePriceBenchmark = regionalSlavePrice('08_central_africa', 'low');
 
   const buyerName = isBlack
@@ -285,13 +304,20 @@ export function generateSlaveContract(
       ? 'стабильный региональный рынок'
       : 'низкоценовой рынок-источник, где пленные стоят дёшево';
 
+  const weeksRemaining = isBlack ? 3 + Math.floor(Math.random() * 2) : 3 + Math.floor(Math.random() * 3);
+  const failurePenalty = Math.round(pricePerHead * quantityWanted * (isBlack ? 0.12 : 0.05));
+  const completionBonusReputation = quantityWanted >= 3 ? 1 : 0;
+  const overCap = Math.max(1, Math.ceil(quantityWanted * 0.5));
+  const kpiOverdeliveryBonusPerHead = Math.max(250, Math.round(pricePerHead * (isBlack ? 0.18 : 0.12)));
+  const kpiDeadlineBonusMoney = Math.round(pricePerHead * quantityWanted * (isBlack ? 0.08 : 0.05));
+  const kpiDeadlineBonusReputation = quantityWanted >= 2 ? 1 : 0;
   return {
     id: 'slavecontract_' + Math.random().toString(36).substring(2, 9),
     channel,
     buyerName,
     buyerType: buyer.type,
     title: buyer.title,
-    description: `Клиент: ${buyer.blurb} — база в ${country} (${regionName}), ${tierBlurb}. Предлагает ${formatMoney(pricePerHead)} за одного пленного, нужно ${quantityWanted} чел.${minQuality === 'any' ? '' : ` качеством не ниже ${minQuality}`}.`,
+    description: `Клиент: ${buyer.blurb} — база в ${country} (${regionName}), ${tierBlurb}. Предлагает ${formatMoney(pricePerHead)} за одного пленного, нужно ${quantityWanted} чел.${minQuality === "any" ? "" : ` качеством не ниже ${minQuality}`}. KPI: дедлайн нед. ${week + weeksRemaining}, перевыполнение до +${overCap} за +${formatMoney(kpiOverdeliveryBonusPerHead)}/гол., закрытие в срок +${formatMoney(kpiDeadlineBonusMoney)}${kpiDeadlineBonusReputation ? ` и +${kpiDeadlineBonusReputation} реп.` : ""}. Срыв: штраф ${formatMoney(failurePenalty)}.`,
     regionId,
     regionName,
     quantityWanted,
@@ -300,10 +326,20 @@ export function generateSlaveContract(
     pricePerHead,
     demandTier: tier,
     sourcePriceBenchmark,
-    rewardReputation: isBlack ? Math.floor(quantityWanted * 1.5) : quantityWanted * 3,
+    rewardReputation: (isBlack ? Math.floor(quantityWanted * 1.5) : quantityWanted * 3) + completionBonusReputation,
     riskReputation: isBlack ? quantityWanted * 3 : quantityWanted * 2,
-    riskPercent: isBlack ? 20 + Math.floor(Math.random() * 20) : 5 + Math.floor(Math.random() * 10),
-    weeksRemaining: isBlack ? 3 + Math.floor(Math.random() * 2) : 3 + Math.floor(Math.random() * 3),
+    riskPercent: isBlack ? Math.floor(Math.random() * 25) + 20 : Math.floor(Math.random() * 15) + 5,
+    startWeek: week,
+    termWeeks: weeksRemaining,
+    failurePenalty,
+    completionBonusReputation,
+    deadlineWeek: week + weeksRemaining,
+    quantityOverDelivered: 0,
+    kpiOverdeliveryBonusPerHead,
+    kpiDeadlineBonusReputation,
+    kpiDeadlineBonusMoney,
+    kpiBonusPaid: false,
+    weeksRemaining,
     status: 'active'
   };
 }
@@ -333,30 +369,103 @@ function regionLabel(regionId: string): string {
 
 /** Roster slaves that a given buyer would accept (available, unassigned-agnostic). */
 export function eligibleSlaves(roster: Character[], contract: SlaveBuyerContract): Character[] {
-  return roster.filter(c => c.isSlave && meetsQualityRequirement(c, contract.minQuality));
+  if (!Array.isArray(roster)) return [];
+  return roster.filter(c => c && c.isSlave && meetsQualityRequirement(c, contract.minQuality));
 }
 
 /**
  * Delivers as many eligible slaves as possible toward a contract. Returns the
  * updated contract plus the ids of the slaves that were handed over.
  */
+export function contractOverdeliveryCap(contract: SlaveBuyerContract): number {
+  return Math.max(1, Math.ceil(Math.max(1, Number(contract.quantityWanted) || 1) * 0.5));
+}
+
+export interface ContractKpiReward {
+  money: number;
+  reputation: number;
+  deadlineMet: boolean;
+  overDelivered: number;
+}
+
+/**
+ * Pays KPI rewards once when a contract reaches wanted quantity. Deadline bonus
+ * applies if currentWeek <= deadlineWeek (or term still active when deadline omitted).
+ * Overdelivery beyond wanted is a separate KPI stream and must be claimed by a
+ * follow-up delivery while contract is active/completed-as-wanted.
+ */
+export function claimContractKpi(
+  contract: SlaveBuyerContract,
+  currentWeek: number
+): { contract: SlaveBuyerContract; reward: ContractKpiReward | null } {
+  const wanted = Math.max(1, Math.floor(Number(contract.quantityWanted) || 1));
+  const delivered = Math.max(0, Math.floor(Number(contract.quantityDelivered) || 0));
+  if (delivered < wanted || contract.kpiBonusPaid || contract.status === 'failed') {
+    return { contract, reward: null };
+  }
+  const deadline = Number.isFinite(contract.deadlineWeek) ? Math.floor(Number(contract.deadlineWeek)) : (Number.isFinite(contract.startWeek) && Number.isFinite(contract.termWeeks) ? Math.floor(Number(contract.startWeek)) + Math.floor(Number(contract.termWeeks)) : Infinity);
+  const deadlineMet = currentWeek <= deadline;
+  const over = Math.max(0, Math.floor(Number(contract.quantityOverDelivered) || 0));
+  const overPerHead = Math.max(0, Math.floor(Number(contract.kpiOverdeliveryBonusPerHead) || 0));
+  const deadlineMoney = deadlineMet ? Math.max(0, Math.floor(Number(contract.kpiDeadlineBonusMoney) || 0)) : 0;
+  const deadlineRep = deadlineMet ? Math.max(0, Math.floor(Number(contract.kpiDeadlineBonusReputation) || 0)) : 0;
+  const money = Math.round(deadlineMoney + over * overPerHead);
+  const reputation = deadlineRep;
+  return {
+    contract: { ...contract, kpiBonusPaid: true },
+    reward: { money, reputation, deadlineMet, overDelivered: over }
+  };
+}
+
+/**
+ * Delivers eligible slaves toward a contract. When wanted is met and
+ * allowOverdelivery is true, extra captives count as KPI overdelivery (capped).
+ */
 export function deliverSlaves(
   contract: SlaveBuyerContract,
-  roster: Character[]
-): { contract: SlaveBuyerContract; deliveredIds: string[] } {
-  const need = contract.quantityWanted - contract.quantityDelivered;
-  if (need <= 0) return { contract, deliveredIds: [] };
+  roster: Character[],
+  opts: { allowOverdelivery?: boolean } = {}
+): { contract: SlaveBuyerContract; deliveredIds: string[]; overdelivery: number } {
+  const wanted = Math.max(1, Math.floor(Number(contract.quantityWanted) || 1));
+  const deliveredBase = Math.max(0, Math.floor(Number(contract.quantityDelivered) || 0));
+  const overBase = Math.max(0, Math.floor(Number(contract.quantityOverDelivered) || 0));
+  const deliveredWanted = Math.min(wanted, deliveredBase);
+  const needWanted = Math.max(0, wanted - deliveredWanted);
+  const cap = contractOverdeliveryCap({ ...contract, quantityWanted: wanted });
+  const allowOver = opts.allowOverdelivery === true && deliveredWanted >= wanted && overBase < cap;
+  const needOver = allowOver ? Math.max(0, cap - overBase) : 0;
+  const need = needWanted > 0 ? needWanted : needOver;
+  if (need <= 0) {
+    return {
+      contract: {
+        ...contract,
+        quantityWanted: wanted,
+        quantityDelivered: deliveredWanted,
+        quantityOverDelivered: Math.min(cap, overBase),
+        status: deliveredWanted >= wanted ? (contract.status === 'failed' ? 'failed' : 'completed') : contract.status
+      },
+      deliveredIds: [],
+      overdelivery: 0
+    };
+  }
 
   const eligible = eligibleSlaves(roster, contract).slice(0, need);
   const deliveredIds = eligible.map(c => c.id);
-  const delivered = { ...contract, quantityDelivered: contract.quantityDelivered + deliveredIds.length };
-
-  if (delivered.quantityDelivered >= delivered.quantityWanted) {
-    delivered.status = 'completed';
+  const nextWantedDelivered = Math.min(wanted, deliveredWanted + (needWanted > 0 ? deliveredIds.length : 0));
+  const overAdded = needWanted > 0 ? 0 : deliveredIds.length;
+  const nextOver = Math.min(cap, overBase + overAdded);
+  const delivered: SlaveBuyerContract = {
+    ...contract,
+    quantityWanted: wanted,
+    quantityDelivered: nextWantedDelivered,
+    quantityOverDelivered: nextOver,
+  };
+  if (nextWantedDelivered >= wanted) {
+    delivered.status = contract.status === 'failed' ? 'failed' : 'completed';
   }
-  return { contract: delivered, deliveredIds };
+  return { contract: delivered, deliveredIds, overdelivery: overAdded };
 }
-// ---------------------------------------------------------------------------
+
 // Caravan-driven supply offers on the Global Market (BUY side).
 //
 // When a region has received a heavy, *consistent* flow of trading caravans in a
@@ -415,6 +524,10 @@ export interface TradeSupplyContract {
   totalPurchased: number;
   /** Funds already spent on the offer. */
   totalSpent: number;
+  /** Базовый риск срыва поставки, % (0.6.6, опционально для старых сейвов). */
+  supplyRiskPercent?: number;
+  /** Последняя причина/прогноз риска для журнала/UI. */
+  lastRiskReason?: string;
   status: 'active' | 'completed';
 }
 
@@ -469,6 +582,7 @@ export function detectCaravanSupplyTriggers(
 export function generateTradeSupplyContract(flow: CaravanRegionFlow, week: number, activeContractsCount: number = 0, effects: MarketImprovementEffects = NO_MARKET_EFFECTS): TradeSupplyContract {
   const tier = demandTier(flow.regionId);
   const country = countryFor(flow.regionId);
+  void country;
   const seller = pick(SUPPLY_REGION_SELLERS);
   
   const termWeeks = Math.min(12, 4 + Math.floor(flow.caravansDelivered / 3));
@@ -496,15 +610,17 @@ export function generateTradeSupplyContract(flow: CaravanRegionFlow, week: numbe
   const pricePerHead = Math.round(regionalSlavePrice(flow.regionId, quality) * (1 - discount));
   const regionName = regionLabel(flow.regionId);
 
+  const caravansDelivered = Math.max(0, Number(flow.caravansDelivered) || 0);
+  const supplyRiskPercent = Math.max(2, Math.min(45, 24 - Math.floor(caravansDelivered / 2) - Math.round(effects.supplyDiscountBonus * 100 * 0.2)));
   return {
     id: 'supplycontract_' + Math.random().toString(36).substring(2, 9),
     channel: 'market',
     regionId: flow.regionId,
     regionName,
-    buyerName: `${seller.type} — ${country}`,
+    buyerName: seller.type,
     title: `Поставка рабов из региона: ${regionName}`,
-    description: `Караваны вышли на ${regionName} крупной партией (${flow.caravansDelivered} прибыли за неделю) — ${seller.blurb}. Регион открывает вам поставку на ${termWeeks} нед.: можно выкупать до ${weeklyQuantity} пленник(ов) в неделю качеством «${quality}» по ${formatMoney(pricePerHead)} за голову (скидка партнёра ${Math.round(discount * 100)}%).`,
-    caravansDelivered: flow.caravansDelivered,
+    description: `Караваны вышли на ${regionName} крупной партией (${caravansDelivered} прибыли за неделю) — ${seller.blurb}. Регион открывает вам поставку на ${termWeeks} нед.: можно выкупать до ${weeklyQuantity} пленник(ов) в неделю качеством «${quality}» по ${formatMoney(pricePerHead)} за голову (скидка партнёра ${Math.round(discount * 100)}%).`,
+    caravansDelivered,
     pricePerHead,
     weeklyQuantity,
     quality,
@@ -515,17 +631,42 @@ export function generateTradeSupplyContract(flow: CaravanRegionFlow, week: numbe
     purchasedThisWeek: 0,
     totalPurchased: 0,
     totalSpent: 0,
+    supplyRiskPercent,
     status: 'active'
   };
+}
+
+export interface SupplyRiskContext {
+  /** Средняя точная выносливость/здоровье логистики, 0..100; ниже = выше риск. */
+  logisticsHealth?: number;
+  /** Уровень безопасности/охраны, 0..100; выше = ниже риск. */
+  securityLevel?: number;
+  /** Эффекты рынка/логистики (скидка/риск). */
+  effects?: MarketImprovementEffects;
+}
+
+/** Прогноз риска срыва региональной поставки (0.6.6): логистика, здоровье/выносливость, безопасность, рынок. */
+export function supplyContractRisk(contract: TradeSupplyContract, ctx: SupplyRiskContext = {}): { percent: number; reason: string } {
+  const effects = ctx.effects ?? NO_MARKET_EFFECTS;
+  const base = Math.max(2, Math.min(45, Number(contract.supplyRiskPercent ?? (22 - Math.min(12, Math.floor((contract.caravansDelivered || 0) / 2))))));
+  const health = Math.max(0, Math.min(100, Number(ctx.logisticsHealth ?? 65)));
+  const sec = Math.max(0, Math.min(100, Number(ctx.securityLevel ?? 40)));
+  const healthPenalty = Math.round(Math.max(0, 70 - health) * 0.18); // слабая логистика/здоровье
+  const secBonus = Math.round(sec * 0.12);
+  const marketBonus = Math.round((Number(effects.supplyDiscountBonus || 0) * 100) * 0.25 + Number(effects.riskReduction || 0) * 0.35);
+  const percent = Math.max(0, Math.min(80, base + healthPenalty - secBonus - marketBonus));
+  const reason = `срыв ${percent}%: база ${base}%, логистика/здоровье ${healthPenalty > 0 ? `+${healthPenalty}%` : 'ок'}, безопасность −${secBonus}%, рынок −${marketBonus}%`;
+  return { percent, reason };
 }
 
 /**
  * Signs an opened regional supply offer. Only a signed contract may be bought
  * from, so the player must accept the terms before any captives change hands.
  */
-export function signTradeSupplyContract(contract: TradeSupplyContract): TradeSupplyContract {
+export function signTradeSupplyContract(contract: TradeSupplyContract, ctx?: SupplyRiskContext): TradeSupplyContract {
   if (contract.status !== 'active' || contract.signed) return contract;
-  return { ...contract, signed: true };
+  const risk = ctx ? supplyContractRisk(contract, ctx) : null;
+  return { ...contract, signed: true, ...(risk ? { supplyRiskPercent: risk.percent, lastRiskReason: risk.reason } : {}) };
 }
 
 /**
@@ -538,14 +679,24 @@ export function buyFromSupplyContract(
   funds: number,
   week: number,
   /** How many heads to buy; defaults to the rest of the week's lot. */
-  requested = contract.weeklyQuantity - contract.purchasedThisWeek
-): { contract: TradeSupplyContract; bought: Character[]; cost: number } {
-  if (contract.status !== 'active' || !contract.signed) return { contract, bought: [], cost: 0 };
+  requested = contract.weeklyQuantity - contract.purchasedThisWeek,
+  ctx?: SupplyRiskContext
+): { contract: TradeSupplyContract; bought: Character[]; cost: number; disrupted: boolean; riskPercent: number; reason: string } {
+  const risk = supplyContractRisk(contract, ctx);
+  if (contract.status !== 'active' || !contract.signed) return { contract, bought: [], cost: 0, disrupted: false, riskPercent: risk.percent, reason: risk.reason };
+
+  // Прогнозируемый срыв поставки (логистика/здоровье/безопасность/рынок) — партия не отгружена, квота недели сгорает.
+  if (risk.percent > 0 && Math.random() * 100 < risk.percent) {
+    return {
+      contract: { ...contract, purchasedThisWeek: contract.weeklyQuantity, lastRiskReason: risk.reason, supplyRiskPercent: risk.percent },
+      bought: [], cost: 0, disrupted: true, riskPercent: risk.percent, reason: risk.reason
+    };
+  }
 
   const room = Math.max(0, contract.weeklyQuantity - contract.purchasedThisWeek);
   const affordable = Math.floor(funds / Math.max(1, contract.pricePerHead));
   const quantity = Math.max(0, Math.min(room, affordable, Math.floor(requested)));
-  if (quantity <= 0) return { contract, bought: [], cost: 0 };
+  if (quantity <= 0) return { contract: { ...contract, lastRiskReason: risk.reason, supplyRiskPercent: risk.percent }, bought: [], cost: 0, disrupted: false, riskPercent: risk.percent, reason: risk.reason };
 
   const bought: Character[] = [];
   for (let i = 0; i < quantity; i++) {
@@ -566,10 +717,15 @@ export function buyFromSupplyContract(
       ...contract,
       purchasedThisWeek: contract.purchasedThisWeek + quantity,
       totalPurchased: contract.totalPurchased + quantity,
-      totalSpent: contract.totalSpent + cost
+      totalSpent: contract.totalSpent + cost,
+      lastRiskReason: risk.reason,
+      supplyRiskPercent: risk.percent
     },
     bought,
-    cost
+    cost,
+    disrupted: false,
+    riskPercent: risk.percent,
+    reason: risk.reason
   };
 }
 
@@ -634,6 +790,8 @@ export interface BuyerStanding {
   scandals: number;
   /** Week number until which this buyer is locked out, or 0 when open. */
   lockedUntilWeek: number;
+  /** Last campaign week with a completed/scandal/interaction outcome (0.6.6). Optional. */
+  lastActiveWeek?: number;
 }
 
 /** Standing tiers that gate order size and price bonuses. */
@@ -678,16 +836,47 @@ export function applyStandingOutcome(
       ...current,
       reputation: Math.max(0, current.reputation - 3),
       scandals: current.scandals + 1,
-      lockedUntilWeek: opts.week + (opts.lockWeeks ?? 4)
+      lockedUntilWeek: opts.week + (opts.lockWeeks ?? 4),
+      lastActiveWeek: opts.week
     };
   } else if (opts.completed) {
-    const bonus = opts.week >= current.lockedUntilWeek ? 1 : 1; // always +1 on clean completion
     next[buyerType] = {
       ...current,
-      reputation: Math.min(10, current.reputation + bonus)
+      reputation: Math.min(10, current.reputation + 1),
+      lastActiveWeek: opts.week
+    };
+  } else {
+    next[buyerType] = { ...current, lastActiveWeek: opts.week };
+  }
+  return next;
+}
+
+/** Degrades inactive buyer trust by 1 point after `idleWeeks` since last activity (0.6.6). Save-compatible. */
+export function decayBuyerStandings(map: StandingMap | undefined, week: number, idleWeeks = 3): StandingMap {
+  if (!map) return {};
+  const next: StandingMap = {};
+  for (const [k, s] of Object.entries(map)) {
+    if (!s || typeof k !== 'string') continue;
+    const last = Math.max(0, Number((s as any).lastActiveWeek) || 0);
+    const idle = last > 0 ? week - last : 0;
+    const drop = idle >= idleWeeks ? 1 : 0;
+    next[k] = {
+      ...s,
+      reputation: Math.max(0, Math.min(10, Math.floor(Number(s.reputation) || 0) - drop)),
+      scandals: Math.max(0, Math.floor(Number(s.scandals) || 0)),
+      lockedUntilWeek: Math.max(0, Math.floor(Number(s.lockedUntilWeek) || 0)),
+      ...(last > 0 ? { lastActiveWeek: drop ? week : last } : {}),
     };
   }
   return next;
+}
+
+export function standingThresholdLabel(standing: number): string {
+  const tier = standingTier(standing);
+  if (tier === 'favoured') return 'favoured (6+): макс. заказы, лучшие условия';
+  if (tier === 'trusted') return 'trusted (3-5): расширенные заказы';
+  if (tier === 'neutral') return 'neutral (1-2): базовые заказы';
+  return 'cold (0): минимальные заказы';
 }
 
 /** Whether a buyer type is currently locked out by a prior scandal. */
@@ -696,13 +885,25 @@ export function isBuyerLocked(standing: BuyerStanding | undefined, week: number)
 }
 
 /**
- * Effective scandal risk for a contract, after the Legal Department's
- * paperwork reduces it. Clamped to 0 so a top-tier legal team removes the risk
- * entirely rather than pushing it negative.
+ * Computes the effective chance that fulfilling a `contract` blows up into a
+ * scandal, after `reductionPoints` worth of legal/auxiliary building cover
+ * (floor 0%).
  */
 export function effectiveRiskPercent(contract: SlaveBuyerContract, reductionPoints = 0, effects: MarketImprovementEffects = NO_MARKET_EFFECTS): number {
   if (reductionPoints <= 0 && effects.riskReduction <= 0) return contract.riskPercent;
   return Math.max(0, contract.riskPercent - reductionPoints - effects.riskReduction);
+}
+
+/** Краткая причина/прогноз риска для UI и журнала (0.6.6). */
+export function contractRiskReason(contract: SlaveBuyerContract, reductionPoints = 0, effects: MarketImprovementEffects = NO_MARKET_EFFECTS): string {
+  const base = Math.max(0, Math.min(100, Number(contract.riskPercent) || 0));
+  const legal = Math.max(0, Number(reductionPoints) || 0);
+  const market = Math.max(0, Number(effects?.riskReduction) || 0);
+  const eff = Math.max(0, base - legal - market);
+  const parts = [`база ${base}%`];
+  if (legal > 0) parts.push(`право/здания −${legal}%`);
+  if (market > 0) parts.push(`рынок −${market}%`);
+  return `${eff}% (${parts.join(', ')}) · удар реп. −${Math.max(0, Number(contract.riskReputation) || 0)}`;
 }
 // ---------------------------------------------------------------------------
 // Idea 1: Slave unrest & escape risk.

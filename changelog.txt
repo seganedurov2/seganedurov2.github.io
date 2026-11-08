@@ -1,11 +1,143 @@
 CHANGELOG.txt
 ================================================================================
 PROJECT: Pawn Pleasure
-VERSION: 0.4.1
-LAST UPDATED: 2026-11-04
+VERSION: 0.6.6
+LAST UPDATED: 2026-11-08
 ===============================================================================
 
-[VERSION 0.4.1 - CURRENT RELEASE] "CITY: Municipal Economy on the Weekly Cycle"
+[VERSION 0.6.6 - CURRENT RELEASE] "Контракты и поставки"
+
+  КОНТРАКТЫ ПОКУПАТЕЛЕЙ (save-compatible, optional поля + миграция)
+  * slaveContractsEngine: KPI-поток дедлайна/перевыполнения — deadlineWeek,
+    quantityOverDelivered, kpiOverdeliveryBonusPerHead, kpiDeadlineBonusReputation,
+    kpiDeadlineBonusMoney, kpiBonusPaid. generateSlaveContract выставляет дедлайн
+    и награды; deliverSlaves(..., { allowOverdelivery }) поддерживает перевыполнение
+    сверх wanted (cap = 50% wanted); claimContractKpi начисляет дедлайн/KPI-награды
+    один раз (clean completion), идемпотентно.
+  * saveState.normalizeSlaveBuyerContract: нормализация/clamp новых KPI-полей,
+    безопасный дедлайн при наличии startWeek/termWeeks, legendary minQuality.
+  * UI/App: подтверждение с контекстом KPI, перевыполнение после выполнения wanted
+    (пока KPI не выплачен), журнал дедлайна/перевыполнения/бонусов, защита от
+    повторного начисления; завершённые контракты с невыплаченным KPI остаются
+    видимыми/активируемыми; карточка показывает KPI +N и дедлайн.
+
+  РЕПУТАЦИЯ ПОКУПАТЕЛЕЙ (standing)
+  * BuyerStanding.lastActiveWeek? (optional); applyStandingOutcome пишет активность.
+  * decayBuyerStandings(..., idleWeeks=3): мягкая деградация -1 после периода без
+    активности; weekly tick применяет decay. standingThresholdLabel — helper порогов.
+  * Спавн buyer-контрактов выбирает реальные типы из MARKET_BUYERS/BLACK_MARKET_BUYERS
+    с учётом standing/lockout/лимита. Нормализация сейвов сохраняет lastActiveWeek.
+
+  РИСКИ И ПОСТАВКИ
+  * supplyContractRisk/buyFromSupplyContract учитывают логистику/здоровье (escort crew),
+    безопасность (guardStrength/scandalRiskReduction/репутация) и market effects.
+    Прогноз/причина в SupplyContractsPanel и при подписи/выкупе; срыв пишет журнал и
+    сжигает недельную партию без списания средств. supplyRiskPercent/lastRiskReason
+    опциональны и нормализуются.
+  * Еженедельный журнал: все активные подписанные поставки получают запись
+    (куплено за неделю/всего, риск/причина, отметка перед закрытием) — 1 запись на
+    контракт в неделю; unsigned не спамятся.
+
+  UI / I18N (база)
+  * Подготовлен i18n-слой 0.6.6 (ru/en, интерполяция {var}): ключи контрактов/поставок,
+    подтверждения подписи/выкупа/доставки, риск/штраф/срыв. SupplyContractsPanel и часть
+    App-подтверждений/лейблов используют t().
+  * release bookkeeping: package.json/package-lock 0.6.6, android versionCode 9 /
+    versionName 0.6.6.
+
+  TESTS
+  * slaveContractsEngine.test: дедлайн/перевыполнение KPI (claimContractKpi, allowOverdelivery).
+  * saveState.test: нормализация контрактов/standing/supply risk полей.
+[VERSION 0.6.5 - PREVIOUS RELEASE] "Рынок и спрос"
+
+  MARKET & DEMAND
+  * src/marketEconomyEngine.ts is a real, guarded engine: safeNumber /
+    safeAmount / computeWeeklyTotals keep NaN, Infinity and broken strings out
+    of prices and the weekly report (an all-broken week gives 0/0/0, never NaN).
+  * Regional demand is clamped to 0.75..2.0, regional standing to 0..100 and a
+    purchase costs list price x demand x standing discount (100 standing = -20%).
+  * A purchase raises demand in the source region (+0.05) and standing (+1);
+    the weekly cycle decays both back through decayMarketDynamics, so the
+    hand-rolled decay loop in App.tsx and campaignWeek.ts is gone.
+  * Arbitrage: marketTier (source / neutral / premium), calculateArbitrage and
+    findBestArbitrage quote "buy in the source, sell in the premium region"
+    with the same formula the market card shows.
+
+  GLOBAL MARKET UI
+  * The deal panel now shows the region demand tier and multiplier, the regional
+    standing with its discount, and the arbitrage margin when it is profitable.
+  * App passes marketDemand and regionalStanding into GlobalMarketTab; they are
+    read from the campaign state, so saves and slot switching pick them up.
+
+  SAVES & MIGRATION
+  * New campaigns start with a per-region demand map (Gulf/Western Europe above
+    base, West/Central Africa below) and neutral standing everywhere.
+  * migrateCampaignState normalizes both maps: unknown region ids and
+    non-finite values are dropped, values are clamped, and saves without the
+    fields load with empty maps instead of failing.
+
+  TESTS
+  * New suite src/marketEconomyEngine.test.ts (guards, decay, pricing,
+    arbitrage, save normalization) plus a saveState migration case.
+
+[VERSION 0.4.2 - PREVIOUS RELEASE] "INPUT: Pointer Map, Leaner App.tsx"
+
+  AUCTION HOUSE (0.4.9 H-прогрессия)
+  * Специальные предметы прогрессии (аналог H-уровня из Pawn Pleasure)
+    могут прибывать с караванами (шанс 12% за прибытие). Продаются
+    только на аукционе по фиксированной цене, без NPC-торгов.
+  * Продажа предмета прогрессии прокачивает один из четырёх треков
+    «дома удовольствия» (БДСМ/фетиш/алкоголь/комнаты) на +1 уровень
+    (до максимума 3) и засчитывается в lifetime-счётчик
+    (progressionItemsSold) и престиж (progressionPoints).
+  * Каждые 5 проданных предметов дают постоянный +10% к выручке
+    (progressionRevenueMultiplier), как H-бонус.
+  * Добавлены достижения: «Первый H-предмет» и «Мастер прогрессии».
+  * Нормализация сохранений: старые слоты без поля прогрессии
+    загружаются без ошибок (значения по умолчанию).
+
+  AUCTION HOUSE (MVP: Talia, осмотр, подделки, свалка)
+  * Аукционист Талия (DEFAULT_AUCTIONEER_PERSONA) ведёт торги после
+    закрытия лавки; при расхождении рыночной и аукционной цены
+    оценщик и аукционист объявляют свои цены.
+  * Осмотр лотов: 2 бесплатных в неделю без оценщика, оценщик
+    (+35% к уверенности) раскрывает verdict. Раскрытая подделка —
+    штраф 50%, NPC не ставят; нераскрытая — скандал (репутация -4,
+    компенсация 10% выручки).
+  * Поддельные лоты появляются с шансом 6% (16% после засады каравана).
+  * Свалка: оптовая продажа 3+ поддельных лотов по 30% от оценки.
+  * Нормализация сохранений: legacy лоты/осмотры/продажи без новых
+    полей загружаются без ошибок.
+
+  MEZZANINE MAP
+  * The region map now pans with mouse, pen and finger and zooms with a pinch.
+    The old mouse-only handlers are replaced by pointer events; one pointer
+    pans, two pinch (zoom follows the change in distance between them, the pan
+    follows their midpoint so the map stays under the fingers), a third finger
+    is ignored until one of the first two lifts.
+  * Touch on the map no longer scrolls or zooms the page (touch-action: none).
+  * Pinch zoom is clamped to the same 8..200 tile range as the wheel and the
+    +/- buttons. src/mapGestures.ts is the React-free gesture math.
+
+  ARCHITECTURE
+  * The weekly cycle left App.tsx: advanceCampaignWeek (src/campaignWeek.ts)
+    turns the campaign state plus the numbers App owns (raid queue, hospital
+    staff, records) into the next state, the week's logs, the event of the
+    week, the achievement toast, the ending and the records to store. The handler in App now only feeds it and writes the result back.
+  * The pure meta-progress half of that cycle lives in
+    src/campaignGoalAdvance.ts (lifetime stats, campaign goal, leaderboard).
+  * Slot persistence moved to src/campaignPersistence.ts: same slot keys, same
+    legacy emporium_save_06 fallback for slot 1, same plain or encrypted body
+    and the same audit entries, so existing saves load unchanged.
+  * The exhaustion/health labels and the off-duty recovery constant moved to
+    src/campaignWeekConstants.ts; App imports them.
+
+  BACKGROUND
+  * The weekly cycle keeps its order and arithmetic; the save format is
+    untouched (no new fields, no changed ones). The 0.4.1 city-economy weekly
+    report is still written exactly as before.
+
+[VERSION 0.4.1 - PREVIOUS RELEASE] "CITY: Municipal Economy on the Weekly Cycle"
 
   CITY ECONOMY
   * New engine src/cityEconomyEngine.ts (pure, React-free): every week the city plan

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { formatMoney, formatSignedMoney, getBtcRate } from './currency';
+import { t } from './i18n';
 import { useBtcRate } from './useBtcRate';
-import { updateRegionalMarketAfterPurchase } from './marketEconomyEngine';
+import { decayMarketDynamics, updateRegionalMarketAfterPurchase } from './marketEconomyEngine';
 import { calculateVenueSynergies, type SynergyResult } from './synergyEngine';
 import type { Platform } from './terminology';
 import {
@@ -13,7 +14,7 @@ import {
   Menu, ChevronLeft, ChevronRight, Target, Trophy, Crown, Gavel, Settings, Bell, Lock, Key
 } from 'lucide-react';
 import type { Character, Caravan, LoanApplication, WeeklyFinanceReport } from './gameEngine';
-import { createGoodsLot, getAuctionHouseStaff, sellAuctionLot as sellAuctionLotEngine, createCharacterLot, buildValuationAnnouncements, valuationMismatch, requestCharacterSaleConsent, cancelCharacterSaleConsent, hasPendingSaleConsent, AUCTION_HOUSE_ADMINISTRATOR } from './auctionHouseEngine';
+import { getAuctionHouseStaff, sellAuctionLot as sellAuctionLotEngine, createCharacterLot, buildValuationAnnouncements, valuationMismatch, requestCharacterSaleConsent, cancelCharacterSaleConsent, hasPendingSaleConsent, AUCTION_HOUSE_ADMINISTRATOR, inspectAuctionLot as inspectAuctionLotEngine, sellCounterfeitsBulk as sellCounterfeitsBulkEngine, createGoodsLot, AUCTION_INSPECTION_BALANCE } from './auctionHouseEngine';
 import type { AuctionLot } from './auctionHouseEngine';
 import { advancePregnancyWeek } from './pregnancyEngine';
 import { DependentsPanel } from './components/roster/DependentsPanel';
@@ -132,9 +133,11 @@ import {
   generateSlaveContract, deliverSlaves, eligibleSlaves,
   assessSlaveUnrest, rollSlaveEscapes, applySlaveBreaking, lifetimeSlaveRevenue,
   getStanding, applyStandingOutcome, isBuyerLocked,
-  maxOrdersForStanding, standingTier, effectiveRiskPercent, marketValueOf,
+  maxOrdersForStanding, standingTier, effectiveRiskPercent, contractRiskReason, marketValueOf,
   detectCaravanSupplyTriggers, generateTradeSupplyContract, buyFromSupplyContract,
-  signTradeSupplyContract, applyBdsmTraining
+  signTradeSupplyContract, supplyContractRisk, applyBdsmTraining,
+  contractOverdeliveryCap, claimContractKpi, decayBuyerStandings,
+  MARKET_BUYERS, BLACK_MARKET_BUYERS
 } from './slaveContractsEngine';
 import { exportGameSave, importGameSave } from './saveImportExport';
 import {
@@ -176,12 +179,14 @@ import {
   loadLeaderboard,
   prestigeRevenueMultiplier,
   prestigeStartingFunds,
+  progressionRevenueMultiplier,
   recordCampaignResult,
   registerAuctionSale,
   registerBuildingConstructed,
   registerCaravanDispatched,
   registerLoanRepaid,
   registerLoanTaken,
+  registerProgressionSale,
   saveGameRecords,
   saveLeaderboard,
   updateGameRecords,
@@ -745,7 +750,11 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
     });
     newState.metaProgress = {
       ...newState.metaProgress,
-      prestige: { level: nextLevel, victories: (gameState.metaProgress?.prestige.victories ?? 0) + 1 }
+      prestige: {
+        level: nextLevel,
+        victories: (gameState.metaProgress?.prestige.victories ?? 0) + 1,
+        progressionPoints: gameState.metaProgress?.prestige.progressionPoints ?? 0
+      }
     };
     setGameState(newState);
     localStorage.setItem(getSlotKey(1), JSON.stringify(newState));
@@ -1076,6 +1085,8 @@ const refreshCandidates = () => {
   const sellAuctionLot = (lotId: string) => {
     // Market assessment of the lot's character, read before the sale mutates state.
     const pendingLot = gameState.auctionHouse.pendingLots.find(lot => lot.id === lotId);
+    /** Выручка за предмет прогрессии (если продан именно он) — для уведомления. */
+    let lastProgressionProceeds = 0;
     // Персонал (рабы и сотрудники) не продаётся без согласия игрока:
     // первое нажатие «Продать» выставляет запрос администратора
     // аукционного дома, продажа состоится только по подтверждению.
@@ -1110,9 +1121,10 @@ const refreshCandidates = () => {
       if (!saleResult.sale) return prev;
       const lot = saleResult.sale;
       const isCharacterLot = 'characterId' in lot;
+      const isProgressionLot = lot.category === 'Прогрессия' && 'targetTrack' in lot;
       const lotChar = isCharacterLot ? prev.roster.find(c => c.id === lot.characterId) : undefined;
       const lotMarketValue = lotChar ? marketValueOf(lotChar) : undefined;
-      const announcements = lotMarketValue !== undefined && valuationMismatch(lotMarketValue, lot.appraisedValue)
+      const announcements = isCharacterLot && lotMarketValue !== undefined && valuationMismatch(lotMarketValue, lot.appraisedValue)
         ? buildValuationAnnouncements(lot, lotMarketValue, currentStaff.appraiser, currentStaff.auctioneer, auctioneerBonus)
         : [];
       let newRoster = prev.roster;
@@ -1120,25 +1132,80 @@ const refreshCandidates = () => {
         const charId = lot.characterId;
         newRoster = prev.roster.filter(c => c.id !== charId);
       }
+      /**
+       * Специальный предмет прогрессии (аналог H-уровня из аукционного дома):
+       * продажа фиксированна и прокачивает трек «дома удовольствия»
+       * + засчитывается в lifetime-счётчик/престиж.
+       */
+      let nextPleasureUpgrades = prev.pleasureHouseUpgrades;
+      let nextMeta = prev.metaProgress;
+      if (isProgressionLot) {
+        const trackId = lot.targetTrack as PleasureHouseUpgradeId;
+        const upgrade = PLEASURE_HOUSE_UPGRADES[trackId];
+        const currentLevel = prev.pleasureHouseUpgrades[trackId] ?? 0;
+        const nextLevel = Math.min(upgrade.maxLevel, currentLevel + 1);
+        nextPleasureUpgrades = { ...prev.pleasureHouseUpgrades, [trackId]: nextLevel };
+        nextMeta = registerProgressionSale(prev.metaProgress);
+      }
+      if (saleResult.scandal) showNotify(saleResult.scandal);
+      if (isProgressionLot) lastProgressionProceeds = lot.saleProceeds;
       return {
         ...prev,
-        funds: prev.funds + saleResult.sale.saleProceeds,
+        funds: Math.max(0, prev.funds + saleResult.sale.saleProceeds + (saleResult.fundsDelta ?? 0)),
+        reputation: Math.max(0, Math.min(100, prev.reputation + (saleResult.reputationDelta ?? 0))),
         roster: newRoster,
         auctionHouse: saleResult.state,
-        metaProgress: registerAuctionSale(prev.metaProgress, saleResult.sale.saleProceeds),
-        log: [isCharacterLot
-          ? `Продан персонал «${lot.productName}» на аукционе за ${formatMoney(saleResult.sale.saleProceeds)}${saleResult.sale.winningNpcBidder ? ` (покупатель ${saleResult.sale.winningNpcBidder} поднял цену до ${formatMoney(saleResult.sale.npcWinningBid!)})` : ''}${saleResult.sale.auctioneerBonusPercent ? ` (аукционист +${saleResult.sale.auctioneerBonusPercent}%).` : '.'}`
-          : `Продан товарный лот «${lot.productName}» из каравана «${lot.caravanName}» за ${formatMoney(saleResult.sale.saleProceeds)}${saleResult.sale.winningNpcBidder ? ` (покупатель ${saleResult.sale.winningNpcBidder} поднял цену до ${formatMoney(saleResult.sale.npcWinningBid!)})` : ''}${saleResult.sale.auctioneerBonusPercent ? ` (аукционист +${saleResult.sale.auctioneerBonusPercent}%).` : '.'}`,
+        pleasureHouseUpgrades: nextPleasureUpgrades,
+        metaProgress: registerAuctionSale(nextMeta, saleResult.sale.saleProceeds),
+        log: [isProgressionLot
+          ? `Продан специальный предмет прогрессии «${lot.productName}» (${lot.trackName}) за ${formatMoney(saleResult.sale.saleProceeds)}. Прокачан трек «${lot.trackName}» до уровня ${nextPleasureUpgrades[lot.targetTrack as PleasureHouseUpgradeId]}.`
+          : isCharacterLot
+            ? `Продан персонал «${lot.productName}» на аукционе за ${formatMoney(saleResult.sale.saleProceeds)}${saleResult.sale.winningNpcBidder ? ` (покупатель ${saleResult.sale.winningNpcBidder} поднял цену до ${formatMoney(saleResult.sale.npcWinningBid!)})` : ''}${saleResult.sale.auctioneerBonusPercent ? ` (аукционист +${saleResult.sale.auctioneerBonusPercent}%).` : '.'}`
+            : `Продан товарный лот «${lot.productName}» из каравана «${lot.caravanName}» за ${formatMoney(saleResult.sale.saleProceeds)}${saleResult.sale.winningNpcBidder ? ` (покупатель ${saleResult.sale.winningNpcBidder} поднял цену до ${formatMoney(saleResult.sale.npcWinningBid!)})` : ''}${saleResult.sale.auctioneerBonusPercent ? ` (аукционист +${saleResult.sale.auctioneerBonusPercent}%).` : '.'}`,
+          ...(saleResult.scandal ? [saleResult.scandal] : []),
           ...announcements.map(announcement => announcement.text),
           ...prev.log].slice(0, 50)
       };
     });
     if (pendingLot) {
       const winningNpc = gameState.auctionHouse.recentSales[0]?.winningNpcBidder;
-      showNotify(pricesDiverge
-        ? `Оценщик и аукционист назвали свои цены. Лот «${pendingLot.productName}» продан — средства зачислены в казну.`
-        : winningNpc ? `Лот продан за ${formatMoney(gameState.auctionHouse.recentSales[0]?.saleProceeds)}! Покупатель ${winningNpc} поднял цену.` : 'Лот продан. Средства зачислены в казну.');
+      const isProgressionPending = pendingLot.category === 'Прогрессия' && 'targetTrack' in pendingLot;
+      showNotify(isProgressionPending
+        ? `Специальный предмет прогрессии «${pendingLot.productName}» продан за ${formatMoney(lastProgressionProceeds)}. Прокачан трек «${pendingLot.trackName}» — H-уровень дома удовольствия вырос!`
+        : pricesDiverge
+          ? `Оценщик и аукционист назвали свои цены. Лот «${pendingLot.productName}» продан — средства зачислены в казну.`
+          : winningNpc ? `Лот продан за ${formatMoney(gameState.auctionHouse.recentSales[0]?.saleProceeds)}! Покупатель ${winningNpc} поднял цену.` : 'Лот продан. Средства зачислены в казну.');
     }
+  };
+
+  const inspectAuctionLotAction = (lotId: string) => {
+    let msg = '';
+    setGameState(prev => {
+      const staff = getAuctionHouseStaff(prev.auxiliaryBuildings, prev.employees);
+      const result = inspectAuctionLotEngine(prev.auctionHouse, lotId, prev.week, staff);
+      if (!result.inspection) { msg = result.reason ?? 'Осмотр недоступен.'; return prev; }
+      const verdictText = result.inspection.verdict === 'counterfeit'
+        ? `подделка подтверждена (${result.inspection.confidence}%)`
+        : result.inspection.verdict === 'suspicious'
+          ? `есть подозрение на подделку (${result.inspection.confidence}%)`
+          : result.inspection.verdict === 'genuine'
+            ? `признаков подделки не найдено (${result.inspection.confidence}%)`
+            : `недостаточно данных (${result.inspection.confidence}%)`;
+      msg = `${result.inspection.inspectorName}: ${verdictText}.`;
+      return { ...prev, auctionHouse: result.state, log: [`Осмотр лота: ${msg}`, ...prev.log].slice(0, 50) };
+    });
+    if (msg) showNotify(msg);
+  };
+
+  const sellJunkyardAction = () => {
+    let msg = '';
+    setGameState(prev => {
+      const result = sellCounterfeitsBulkEngine(prev.auctionHouse, prev.week);
+      if (result.count === 0) { msg = `Свалка принимает опт только от ${AUCTION_INSPECTION_BALANCE.junkyardUnlockCount} поддельных лотов.`; return prev; }
+      msg = `Свалка: продано ${result.count} поддельных лотов оптом за ${formatMoney(result.proceeds)}.`;
+      return { ...prev, funds: prev.funds + result.proceeds, auctionHouse: result.state, log: [msg, ...prev.log].slice(0, 50) };
+    });
+    if (msg) showNotify(msg);
   };
 
   /** Подтверждает запрос администратора и завершает продажу лота персонала. */
@@ -1914,6 +1981,7 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
     }
 
     // Process Slave-purchase contracts (buyers in the marketplace / black market).
+    let slaveContractPenalties = 0;
     const updatedSlaveContracts: SlaveBuyerContract[] = [];
     (gameState.slaveContracts || []).forEach(contract => {
       if (contract.status !== 'active') {
@@ -1924,7 +1992,9 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
       if (remaining <= 0) {
         // Offer expired before it was fulfilled.
         updatedSlaveContracts.push({ ...contract, weeksRemaining: 0, status: 'failed' });
-        newLogs.push(`Контракт на пленных «${contract.title}» от ${contract.buyerName} истёк неисполненным (${contract.quantityDelivered}/${contract.quantityWanted} чел. поставлено).`);
+        const penalty = Math.max(0, Math.floor(Number(contract.failurePenalty) || 0));
+        if (penalty > 0) slaveContractPenalties += penalty;
+        newLogs.push(`Контракт на пленных «${contract.title}» от ${contract.buyerName} истёк неисполненным (${contract.quantityDelivered}/${contract.quantityWanted} чел.).${penalty > 0 ? ` Штраф: ${formatMoney(penalty)}.` : ''}`);
       } else {
         updatedSlaveContracts.push({ ...contract, weeksRemaining: remaining });
       }
@@ -1935,25 +2005,33 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
     // contracts below). Order counts are gated by the syndicate's standing with the
     // buyer type, and a buyer locked out by a recent scandal places no new orders.
     const nextWeek = gameState.week + 1;
+
     const standings: StandingMap = gameState.buyerStandings || {};
     // Улучшения глобального рынка влияют на цены, объёмы, скидки
     // и риски всех контрактов этой недели.
     const marketEffects = marketImprovementEffects(gameState.marketImprovements);
 
     const trySpawnOffer = (channel: SlaveContractChannel) => {
-      const buyerType = 'Private Estate';
-      const standingRec = getStanding(standings, buyerType);
-      if (isBuyerLocked(standingRec, nextWeek)) {
-        newLogs.push(`Покупатель пленных ${buyerType} избегает вашего синдиката на этой неделе (недавний скандал).`);
+      const pool = channel === 'black_market' ? BLACK_MARKET_BUYERS : MARKET_BUYERS;
+      const candidates = pool
+        .map(b => ({ buyerType: b.type, standingRec: getStanding(standings, b.type) }))
+        .filter(b => !isBuyerLocked(b.standingRec, nextWeek))
+        .sort((a, b) => b.standingRec.reputation - a.standingRec.reputation || (a.standingRec.scandals - b.standingRec.scandals));
+      if (candidates.length === 0) {
+        newLogs.push(`Покупатели канала ${channel === 'black_market' ? 'чёрного рынка' : 'рынка'} избегают синдиката на этой неделе (скандалы).`);
         return;
       }
-      const capForChannel = updatedSlaveContracts.filter(c => c.status === 'active' && c.channel === channel).length;
-      const allowed = maxOrdersForStanding(standingRec.reputation);
+      const chosen = candidates.find(c => updatedSlaveContracts.filter(x => x.status === 'active' && x.channel === channel && x.buyerType === c.buyerType).length < maxOrdersForStanding(c.standingRec.reputation))
+        ?? candidates[0];
+      const capForChannel = updatedSlaveContracts.filter(c => c.status === 'active' && c.channel === channel && c.buyerType === chosen.buyerType).length;
+      const allowed = maxOrdersForStanding(chosen.standingRec.reputation);
       if (capForChannel >= allowed) return;
-      const offer = generateSlaveContract(channel, standingRec.reputation, marketEffects);
-      updatedSlaveContracts.push(offer);
-      const tierBadge = offer.demandTier === 'high' ? ' [ВЫСОКИЙ СПРОС]' : offer.demandTier === 'low' ? ' [НИЗКИЙ СПРОС]' : '';
-      newLogs.push(`Новый покупатель пленных${tierBadge} на глобальном рынке: ${offer.buyerName} ищет ${offer.quantityWanted} пленных по ${formatMoney(offer.pricePerHead)} за голову.`);
+      const offer = generateSlaveContract(channel, chosen.standingRec.reputation, marketEffects);
+      // Keep spawned contract tied to chosen standing type for consistency.
+      const tiedOffer = { ...offer, buyerType: chosen.buyerType };
+      updatedSlaveContracts.push(tiedOffer);
+      const tierBadge = tiedOffer.demandTier === 'high' ? ' [ВЫСОКИЙ СПРОС]' : tiedOffer.demandTier === 'low' ? ' [НИЗКИЙ СПРОС]' : '';
+      newLogs.push(`Новый покупатель пленных${tierBadge}: ${tiedOffer.buyerName} (${chosen.buyerType}, доверие ${chosen.standingRec.reputation}) ищет ${tiedOffer.quantityWanted} пленных по ${formatMoney(tiedOffer.pricePerHead)} за голову.`);
     };
     if (rollChance(0.5)) trySpawnOffer('market');
 
@@ -1986,7 +2064,13 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
         }
         return;
       }
-      updatedSupplyContracts.push({ ...contract, weeksRemaining, purchasedThisWeek: 0 });
+      const remainingContract = { ...contract, weeksRemaining, purchasedThisWeek: 0 };
+      updatedSupplyContracts.push(remainingContract);
+      if (contract.signed) {
+        const risk = supplyContractRisk(remainingContract, supplyRiskCtx(gameState));
+        const closing = weeksRemaining <= 1 ? ' · до закрытия 1 нед.' : '';
+        newLogs.push(`Поставка ${contract.regionName}${closing}: куплено на неделе ${contract.purchasedThisWeek ?? 0}/${contract.weeklyQuantity}, всего ${contract.totalPurchased ?? 0}. Риск: ${risk.reason}.`);
+      }
     });
 
     // A week where 5-15 caravans all arrived in the same region makes that region
@@ -2239,8 +2323,18 @@ const restZoneUpkeep = restZoneWeeklyUpkeep(gameState.restZone);
       contractEarnings = Math.floor(contractEarnings * prestigeMultiplier);
       salonTreatmentRevenue = Math.floor(salonTreatmentRevenue * prestigeMultiplier);
     }
-    const netIncome = venueRevenue + caravanEarnings + captureFundsDelta.total + contractEarnings + salonTreatmentRevenue - employeeWeek.wagesPaid - hospitalWeek.upkeep - restZoneUpkeep - staffSlotUpkeep;
-    currentFunds += netIncome;
+    // H-прогрессия: проданные специальные предметы из аукционного дома
+    // дают постоянный bonus к выручке (аналог H-уровня из Pawn Pleasure).
+    const progressionMultiplier = progressionRevenueMultiplier(gameState.metaProgress?.prestige.progressionPoints ?? 0);
+    if (progressionMultiplier > 1) {
+      venueRevenue = Math.floor(venueRevenue * progressionMultiplier);
+      caravanEarnings = Math.floor(caravanEarnings * progressionMultiplier);
+      captureFundsDelta.total = Math.floor(captureFundsDelta.total * progressionMultiplier);
+      contractEarnings = Math.floor(contractEarnings * progressionMultiplier);
+      salonTreatmentRevenue = Math.floor(salonTreatmentRevenue * progressionMultiplier);
+    }
+    const weekNetIncome = venueRevenue + caravanEarnings + captureFundsDelta.total + contractEarnings + salonTreatmentRevenue - employeeWeek.wagesPaid - hospitalWeek.upkeep - restZoneUpkeep - staffSlotUpkeep;
+    currentFunds += weekNetIncome;
 if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплата сотрудникам: ${formatMoney(employeeWeek.wagesPaid)}.`);
     if (hospitalWeek.upkeep > 0) newLogs.push(`Содержание палат больницы: -${formatMoney(hospitalWeek.upkeep)}.`);
     if (restZoneUpkeep > 0) newLogs.push(`Содержание зоны отдыха: -${formatMoney(restZoneUpkeep)}.`);
@@ -2361,7 +2455,9 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     // syndicate logged, kept in the save so the Finance & Loans tab can show
     // it in its notifications panel.
     const totalRevenue = venueRevenue + caravanEarnings + captureFundsDelta.total + contractEarnings + salonTreatmentRevenue + cityIncome;
-    const totalExpenses = employeeWeek.wagesPaid + hospitalWeek.upkeep + restZoneUpkeep + staffSlotUpkeep + warehouseUpkeep + cityExpenses + cityConstructionSpend;
+    const totalExpenses = employeeWeek.wagesPaid + hospitalWeek.upkeep + restZoneUpkeep + staffSlotUpkeep + warehouseUpkeep + cityExpenses + cityConstructionSpend + slaveContractPenalties;
+    if (slaveContractPenalties > 0) contractEarnings -= slaveContractPenalties;
+    const netIncome = totalRevenue - totalExpenses;
     const weeklyReport: WeeklyFinanceReport = {
       week: gameState.week + 1,
       revenue: {
@@ -2457,10 +2553,11 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     }
 
     // Demand Decay: gradually reduce regional demand back to 1.0
-    const nextMarketDemand = { ...gameState.marketDemand };
-    for (const regionId in nextMarketDemand) {
-      nextMarketDemand[regionId] = Math.max(1, nextMarketDemand[regionId] - 0.02);
-    }
+    const marketDynamics = decayMarketDynamics(
+      gameState.marketDemand ?? {},
+      gameState.regionalStanding ?? {}
+    );
+    const nextMarketDemand = marketDynamics.nextDemand;
 
 
     setGameState(prev => ({
@@ -2516,6 +2613,7 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
       marketPool: marketRefresh.pool,
        reservedMarketCharacterIds: [],
        marketDemand: nextMarketDemand,
+       regionalStanding: marketDynamics.nextStanding,
        caravans: updatedCaravans.filter(c => {
 
          if (c.status === 'traveling') return true;
@@ -2532,7 +2630,7 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
         )
       },
       contracts: updatedContracts.filter(c => c.status === 'active'),
-      slaveContracts: updatedSlaveContracts.filter(c => c.status === 'active'),
+      slaveContracts: updatedSlaveContracts.filter(c => c.status === 'active' || (c.status === 'completed' && !c.kpiBonusPaid && Number(c.quantityDelivered || 0) >= Number(c.quantityWanted || 1))),
       tradeSupplyContracts: updatedSupplyContracts.filter(c => c.status === 'active'),
       captiveLots: updatedLots,
       reservedCaptiveLotIds: [],
@@ -3147,21 +3245,39 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
    * Signs an opened regional supply offer, unlocking the weekly purchase right.
    * The caravans opened the door; signing is what commits the syndicate to buying.
    */
+  // ---------- КОНТРАКТЫ НА ПОСТАВКИ / SUPPLY CONTRACTS (0.6.6) ----------
+  /** Контекст риска поставки: логистика (escort skill/loyalty), безопасность (guard/scandal rep), рынок. */
+  const supplyRiskCtx = (state: ManagedCampaignState) => {
+    const fx = marketImprovementEffects(state.marketImprovements);
+    const be = calculateBuildingWeeklyEffects(state.auxiliaryBuildings, state.employees);
+    const escort = be.escortCrew || [];
+    const logisticsHealth = escort.length
+      ? Math.max(10, Math.min(100, Math.round(escort.reduce((s, e) => s + ((Number(e.skill) || 0) * 0.7 + (Number(e.loyalty) || 0) * 0.3), 0) / escort.length)))
+      : Math.max(20, Math.min(75, Math.round(40 + (Number(state.reputation) || 0) * 0.35)));
+    const securityLevel = Math.max(10, Math.min(100, Math.round((Number(state.reputation) || 0) * 0.55 + (Number(be.guardStrength) || 0) * 10 + (Number(be.scandalRiskReduction) || 0) * 0.8)));
+    return { effects: fx, logisticsHealth, securityLevel };
+  };
+
   const signRegionSupply = (contractId: string) => {
     const contract = (gameState.tradeSupplyContracts || []).find(c => c.id === contractId);
     if (!contract || contract.status !== 'active' || contract.signed) return;
+    const risk = supplyContractRisk(contract, supplyRiskCtx(gameState));
+    if (typeof window !== 'undefined' && !window.confirm(t('contract.supply.sign.confirm', { region: contract.regionName, qty: contract.weeklyQuantity, price: formatMoney(contract.pricePerHead), weeks: contract.weeksRemaining, risk: risk.reason }))) return;
 
-    setGameState(prev => ({
-      ...prev,
-      tradeSupplyContracts: (prev.tradeSupplyContracts || []).map(c =>
-        c.id === contractId ? signTradeSupplyContract(c) : c
-      ),
-      log: [
-        `Подписан контракт на поставку рабов с регионом ${contract.regionName}: до ${contract.weeklyQuantity} чел./нед. по ${formatMoney(contract.pricePerHead)} за голову в течение ${contract.weeksRemaining} нед.`,
-        ...prev.log
-      ].slice(0, 50)
-    }));
-    showNotify(`Контракт с регионом ${contract.regionName} подписан — теперь можно выкупать пленников.`);
+    setGameState(prev => {
+      const ctx = supplyRiskCtx(prev);
+      const signed = signTradeSupplyContract(contract, ctx);
+      const rr = supplyContractRisk(signed, ctx);
+      return {
+        ...prev,
+        tradeSupplyContracts: (prev.tradeSupplyContracts || []).map(c => c.id === contractId ? signed : c),
+        log: [
+          t('contract.supply.signed', { region: contract.regionName }) + `: до ${contract.weeklyQuantity} чел./нед. по ${formatMoney(contract.pricePerHead)}, ${contract.weeksRemaining} нед. ${t('contract.supply.forecast')}: ${rr.reason}.`,
+          ...prev.log
+        ].slice(0, 50)
+      };
+    });
+    showNotify(`Контракт с регионом ${contract.regionName} подписан.`);
   };
 
   /**
@@ -3178,18 +3294,35 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
     const contract = (gameState.tradeSupplyContracts || []).find(c => c.id === contractId);
     if (!contract || contract.status !== 'active') return;
 
-    const { contract: updated, bought, cost } = buyFromSupplyContract(
-      contract,
-      gameState.funds,
-      gameState.week,
-      quantity
-    );
+    const riskCtx = supplyRiskCtx(gameState);
+    const risk = supplyContractRisk(contract, riskCtx);
+    const room = Math.max(0, contract.weeklyQuantity - contract.purchasedThisWeek);
+    const affordable = Math.floor(gameState.funds / Math.max(1, contract.pricePerHead));
+    const estQty = Math.max(0, Math.min(room, affordable, Math.floor(quantity ?? room)));
+    if (estQty <= 0) {
+      showNotify(gameState.funds < contract.pricePerHead ? `Недостаточно средств: одна голова стоит ${formatMoney(contract.pricePerHead)}.` : 'Недельная партия уже выкуплена.');
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm(t('contract.supply.buy.confirm', { qty: estQty, region: contract.regionName, cost: formatMoney(estQty * contract.pricePerHead), risk: risk.reason }))) return;
+
+    const result = buyFromSupplyContract(contract, gameState.funds, gameState.week, quantity, riskCtx);
+    if (result.disrupted) {
+      setGameState(prev => ({
+        ...prev,
+        tradeSupplyContracts: (prev.tradeSupplyContracts || []).map(c => c.id === contractId ? result.contract : c),
+        log: [t('contract.supply.disrupted.msg', { region: contract.regionName, risk: result.reason || '' }), ...prev.log].slice(0, 50)
+      }));
+      showNotify(t('contract.supply.disrupted.msg', { region: contract.regionName, risk: result.reason || '' }));
+      return;
+    }
+    const { contract: updated, bought, cost } = result;
     if (bought.length === 0) {
       showNotify(
         gameState.funds < contract.pricePerHead
           ? `Недостаточно средств: одна голова стоит ${formatMoney(contract.pricePerHead)}.`
           : 'Недельная партия уже выкуплена.'
       );
+      setGameState(prev => ({ ...prev, tradeSupplyContracts: (prev.tradeSupplyContracts || []).map(c => c.id === contractId ? updated : c) }));
       return;
     }
 
@@ -3199,73 +3332,96 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
       roster: [...prev.roster, ...bought],
       tradeSupplyContracts: (prev.tradeSupplyContracts || []).map(c => c.id === contractId ? updated : c),
       log: [
-        `Выкуплено у региона ${contract.regionName}: ${bought.length} пленник(ов) (качество: ${contract.quality}) за ${formatMoney(cost)}.`,
+        `Выкуплено у региона ${contract.regionName}: ${bought.length} пленник(ов) (${contract.quality}) за ${formatMoney(cost)}. Риск: ${result.reason}.`,
         ...prev.log
       ].slice(0, 50)
     }));
-    showNotify(`Куплено ${bought.length} пленник(ов) у региона ${contract.regionName} за ${formatMoney(cost)}.`);
+    showNotify(`Куплено ${bought.length} пленник(ов) у ${contract.regionName} за ${formatMoney(cost)}.`);
   };
 
   const fulfillSlaveContract = (contractId: string) => {
     const contract = (gameState.slaveContracts || []).find(c => c.id === contractId);
     if (!contract || contract.status !== 'active') return;
 
-    const { contract: delivered, deliveredIds } = deliverSlaves(contract, gameState.roster);
     const legalRiskReduction = calculateBuildingWeeklyEffects(gameState.auxiliaryBuildings, gameState.employees).scandalRiskReduction;
+    const marketFx = marketImprovementEffects(gameState.marketImprovements);
+    const wanted = Math.max(1, Number(contract.quantityWanted) || 1);
+    const baseDelivered = Math.min(wanted, Math.max(0, Number(contract.quantityDelivered) || 0));
+    const allowOverdelivery = baseDelivered >= wanted && !contract.kpiBonusPaid && (Number(contract.quantityOverDelivered) || 0) < contractOverdeliveryCap(contract);
+    const { contract: delivered, deliveredIds, overdelivery } = deliverSlaves(contract, gameState.roster, { allowOverdelivery });
     if (deliveredIds.length === 0) {
-      showNotify('Нет подходящих пленников в составе для этого покупателя!');
+      showNotify(allowOverdelivery ? 'Нет подходящих пленников для перевыполнения KPI.' : 'Нет подходящих пленников в составе для этого покупателя!');
       return;
     }
+    const rrText = contractRiskReason(contract, legalRiskReduction, marketFx);
+    const confirmKey = contract.failurePenalty ? 'contract.deliver.confirm' : 'contract.deliver.confirm.noPenalty';
+    const overCap = contractOverdeliveryCap(contract);
+    const confirmMsg = t(confirmKey, { qty: deliveredIds.length, title: contract.title, risk: rrText, penalty: formatMoney(contract.failurePenalty || 0) }) + (allowOverdelivery ? `\nПеревыполнение KPI: +${overdelivery} (лимит +${overCap}, ${formatMoney(contract.kpiOverdeliveryBonusPerHead || 0)}/гол.)` : '');
+    if (typeof window !== 'undefined' && !window.confirm(confirmMsg)) return;
 
-    const payout = Math.round(deliveredIds.length * contract.pricePerHead * marketImprovementEffects(gameState.marketImprovements).proceedsMultiplier);
-    const fullyDone = delivered.status === 'completed';
-    // Roll the risk only when the full order is closed out.
-    const scandal = fullyDone && rollPercent(effectiveRiskPercent(contract, legalRiskReduction, marketImprovementEffects(gameState.marketImprovements)));
-    const reputationDelta = scandal
-      ? -contract.riskReputation
-      : fullyDone
-        ? contract.rewardReputation
-        : 0;
+    const payout = Math.round(deliveredIds.length * contract.pricePerHead * marketFx.proceedsMultiplier);
+    const fullyDone = delivered.quantityDelivered >= wanted;
+    const scandal = fullyDone && baseDelivered < wanted && rollPercent(effectiveRiskPercent(contract, legalRiskReduction, marketFx));
+    const completionBonus = fullyDone && !scandal && baseDelivered < wanted ? Math.max(0, Math.floor(Number(contract.completionBonusReputation) || 0)) : 0;
 
     setGameState(prev => {
+      let nextDelivered = delivered;
+      let kpiMoney = 0;
+      let kpiRep = 0;
+      let kpiNote = '';
+      if (fullyDone && !scandal) {
+        const claimed = claimContractKpi(nextDelivered, prev.week);
+        nextDelivered = claimed.contract;
+        if (claimed.reward) {
+          kpiMoney = claimed.reward.money;
+          kpiRep = claimed.reward.reputation;
+          if (claimed.reward.deadlineMet || claimed.reward.overDelivered > 0 || kpiMoney > 0 || kpiRep > 0) {
+            kpiNote = `KPI: ${claimed.reward.deadlineMet ? 'дедлайн выполнен' : 'дедлайн не выполнен'}${claimed.reward.overDelivered > 0 ? `, перевыполнение +${claimed.reward.overDelivered}` : ''}${kpiMoney ? `, +${formatMoney(kpiMoney)}` : ''}${kpiRep ? `, +${kpiRep} реп.` : ''}.`;
+          }
+        }
+      }
+      const reputationDelta = scandal
+        ? -contract.riskReputation
+        : (baseDelivered < wanted ? Math.max(0, Math.floor(Number(contract.rewardReputation) || 0)) + completionBonus : 0) + kpiRep;
+
       const logEntries = [
-        `Контракт «${contract.title}»: доставлено ${deliveredIds.length} пленник(ов) покупателю ${contract.buyerName} за ${formatMoney(payout)} (${delivered.quantityDelivered}/${delivered.quantityWanted}).`,
+        `Контракт «${contract.title}»: доставлено ${deliveredIds.length} пленник(ов) покупателю ${contract.buyerName} за ${formatMoney(payout)} (${nextDelivered.quantityDelivered}/${nextDelivered.quantityWanted}${nextDelivered.quantityOverDelivered ? `, KPI +${nextDelivered.quantityOverDelivered}` : ''}). Риск: ${contractRiskReason(contract, legalRiskReduction, marketFx)}.`,
         scandal ? `СКАНДАЛ: рейд по борьбе с торговлей людьми вывел след на ваш синдикат (${reputationDelta} репутации).` : '',
-        !scandal && fullyDone ? `Контракт выполнен без инцидентов. +${reputationDelta} репутации.` : ''
+        !scandal && fullyDone && baseDelivered < wanted ? `Контракт выполнен без инцидентов. +${reputationDelta - kpiRep} репутации${completionBonus ? ` (в т.ч. бонус +${completionBonus})` : ''}.` : '',
+        !scandal && kpiNote ? kpiNote : ''
       ].filter(Boolean);
 
-      // Update standing with this buyer type (Idea 5): clean completions build
-      // trust (bigger orders, better prices); a scandal locks them out for weeks.
       const updatedStandings = applyStandingOutcome(prev.buyerStandings, contract.buyerType, {
-        completed: fullyDone,
+        completed: fullyDone && baseDelivered < wanted,
         scandal,
-        week: prev.week
+        week: prev.week || gameState.week
       });
       const newTier = standingTier(getStanding(updatedStandings, contract.buyerType).reputation);
       const standingNote = scandal
         ? `Отношения с покупателем ${contract.buyerType} испорчены — блокировка на несколько недель.`
-        : fullyDone
+        : fullyDone && baseDelivered < wanted
           ? `Отношения с покупателем ${contract.buyerType} улучшены (${newTier}).`
           : '';
 
       return {
         ...prev,
-        funds: prev.funds + payout,
+        funds: prev.funds + payout + kpiMoney,
         reputation: Math.min(100, Math.max(0, prev.reputation + reputationDelta)),
         roster: prev.roster.filter(c => !deliveredIds.includes(c.id)),
-        slaveContracts: (prev.slaveContracts || []).map(c => c.id === contractId ? { ...delivered, status: scandal ? 'failed' : delivered.status } : c),
-        buyerStandings: updatedStandings,
+        slaveContracts: (prev.slaveContracts || []).map(c => c.id === contractId ? { ...nextDelivered, status: scandal ? 'failed' : nextDelivered.status } : c),
+        buyerStandings: decayBuyerStandings(updatedStandings, gameState.week + 1, 3),
         log: [...logEntries, standingNote, ...prev.log].filter(Boolean).slice(0, 50)
       };
     });
 
-    if (scandal) {
-      showNotify(`Сделка раскрыта! Доставлено ${deliveredIds.length} пленник(ов), но потеряно ${contract.riskReputation} репутации.`);
-    } else {
-      showNotify(`Доставлено ${deliveredIds.length} пленник(ов) покупателю ${contract.buyerName} за ${formatMoney(payout)}.`);
-    }
+    showNotify(scandal
+      ? 'Сделка сорвана: скандал!'
+      : overdelivery > 0
+        ? `KPI: перевыполнение +${overdelivery}, +${formatMoney(payout)}.`
+        : fullyDone
+          ? `Контракт выполнен! +${formatMoney(payout)}`
+          : `Поставка: ${deliveredIds.length} голова(ы), +${formatMoney(payout)}.`);
   };
-
   const applyForLoan = () => {
     if (gameState.activeLoan) {
       showNotify('У вас уже есть активный кредит!');
@@ -3924,7 +4080,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
    * showing the roster's eligible captives and a fulfilment button per offer.
    */
   const renderSlaveContracts = (channel: SlaveContractChannel) => {
-    const offers = (gameState.slaveContracts || []).filter(c => c.channel === channel && c.status === 'active');
+    const offers = (gameState.slaveContracts || []).filter(c => c.channel === channel && c.status !== 'failed' && (c.status === 'active' || (!c.kpiBonusPaid && Number(c.quantityDelivered || 0) >= Number(c.quantityWanted || 1))));
 
     if (offers.length === 0) {
       return (
@@ -3945,9 +4101,9 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
               <div>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h4 className="font-bold text-white text-sm leading-tight">{contract.title}</h4>
-                    <p className="text-xs text-amber-400 mt-0.5">{contract.buyerName}</p>
-                    <p className="text-[10px] uppercase text-slate-500 font-semibold mt-0.5">{contract.buyerType === 'Private Estate' ? 'Частное поместье' : contract.buyerType === 'Cartel Broker' ? 'Брокер картеля' : 'Подпольный аукционист'} • {contract.regionName}</p>
+                    <h4 className="font-bold text-white text-sm leading-tight line-clamp-2 break-words" title={contract.title}>{contract.title}</h4>
+                    <p className="text-xs text-amber-400 mt-0.5 truncate" title={contract.buyerName}>{contract.buyerName}</p>
+                    <p className="text-[10px] uppercase text-slate-500 font-semibold mt-0.5 truncate" title={`${contract.buyerType} • ${contract.regionName}`}>{contract.buyerType} • {contract.regionName}</p>
                   </div>
                   <div className="flex-col items-end gap-1 shrink-0">
                     <span className="text-xs font-mono px-2 py-1 rounded-full font-bold bg-slate-800 text-slate-300">{contract.weeksRemaining} нед.</span>
@@ -3956,15 +4112,19 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
                     </span>
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 mt-2 leading-relaxed">{contract.description}</p>
-                <div className="text-[10px] font-mono text-emerald-400 mt-1">Арбитраж: ориентир в регионе поставки {formatMoney(contract.sourcePriceBenchmark)}/голова → предложение платит {formatMoney(contract.pricePerHead)}/голова</div>
+                <p className="text-xs text-slate-400 mt-2 leading-relaxed line-clamp-3 break-words" title={contract.description}>{contract.description}</p>
+                <div className="text-[10px] font-mono text-emerald-400 mt-1 break-words">Арбитраж: {formatMoney(contract.sourcePriceBenchmark)}/гол. → {formatMoney(contract.pricePerHead)}/гол. · выплата {formatMoney(eligible.length * contract.pricePerHead * marketImprovementEffects(gameState.marketImprovements).proceedsMultiplier)}{contract.quantityOverDelivered ? ` · KPI +${contract.quantityOverDelivered}` : '}{contract.deadlineWeek ? ` · дедлайн нед. ${contract.deadlineWeek}` : '}</div>
                 <div className="grid grid-cols-2 gap-2 mt-3 text-xs font-mono">
                   <div className="flex justify-between"><span className="text-slate-500">Требуется</span><span className="text-white">{contract.quantityWanted}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Доставлено</span><span className="text-white">{contract.quantityDelivered}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">За голову</span><span className="text-emerald-400">{formatMoney(contract.pricePerHead)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Мин. качество</span><span className="text-pink-400">{contract.minQuality === 'low' ? 'Низкое' : contract.minQuality === 'medium' ? 'Среднее' : 'Высокое'}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Риск</span><span className="text-red-400">{contract.riskPercent}%</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Репутационный удар</span><span className="text-red-400">-{contract.riskReputation} реп.</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Мин. качество</span><span className="text-pink-400">{contract.minQuality === 'any' ? 'Любое' : contract.minQuality === 'low' ? 'Низкое' : contract.minQuality === 'medium' ? 'Среднее' : contract.minQuality === 'high' ? 'Высокое' : 'Легендарное'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">{t('contract.supply.forecast')}</span><span className="text-red-400 break-words text-right" title={contractRiskReason(contract, calculateBuildingWeeklyEffects(gameState.auxiliaryBuildings, gameState.employees).scandalRiskReduction, marketImprovementEffects(gameState.marketImprovements))}>{effectiveRiskPercent(contract, calculateBuildingWeeklyEffects(gameState.auxiliaryBuildings, gameState.employees).scandalRiskReduction, marketImprovementEffects(gameState.marketImprovements))}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">{t('contract.deliver.penalty')}</span><span className="text-red-300">{formatMoney(contract.failurePenalty || 0)}</span></div>
+                  <div className="flex justify-between col-span-2"><span className="text-slate-500">Причина риска</span><span className="text-slate-300 text-right break-words max-w-[60%]">{contractRiskReason(contract, calculateBuildingWeeklyEffects(gameState.auxiliaryBuildings, gameState.employees).scandalRiskReduction, marketImprovementEffects(gameState.marketImprovements))}</span></div>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-900" role="progressbar" aria-label={`Прогресс контракта: ${contract.title}`} aria-valuemin={0} aria-valuemax={Math.max(1, contract.quantityWanted)} aria-valuenow={contract.quantityDelivered}>
+                  <div className="h-full rounded-full bg-amber-500" style={{ width: `${Math.min(100, (contract.quantityDelivered / Math.max(1, contract.quantityWanted)) * 100)}%` }} />
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3 border-t border-slate-800/60 pt-3">
@@ -3991,24 +4151,41 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
    * caps, price bonuses and any active scandal lockout.
    */
   const renderBuyerRelationships = () => {
+    const known: Array<{ type: string; label: string }> = [
+      { type: 'Частное имение', label: 'Частное имение' },
+      { type: 'Дипломатический дом', label: 'Дипломатический дом' },
+      { type: 'Люксовая гостиничная группа', label: 'Люксовая гостиница' },
+      { type: 'Судоходный консорциум', label: 'Судоходный консорциум' },
+      { type: 'Подпольный аукционист', label: 'Подпольный аукционист' },
+      { type: 'Брокер картеля', label: 'Брокер картеля' },
+      { type: 'Контрабандистский синдикат', label: 'Контрабандисты' },
+      { type: 'Теневой брокер', label: 'Теневой брокер' }
+    ];
+    const present = new Set([
+      ...Object.keys(gameState.buyerStandings || {}),
+      ...(gameState.slaveContracts || []).map(c => c.buyerType)
+    ]);
+    const rows = [
+      ...known.filter(k => present.has(k.type) || k.type === 'Частное имение' || k.type === 'Дипломатический дом'),
+      ...Array.from(present).filter(t => !known.some(k => k.type === t)).map(t => ({ type: t, label: t }))
+    ].slice(0, 8);
     return (
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {['Private Estate', 'Diplomatic Household', 'Shipping Consortium'].map(buyerType => {
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        {rows.map(({ type: buyerType, label }) => {
           const rec = getStanding(gameState.buyerStandings, buyerType);
           const locked = isBuyerLocked(rec, gameState.week);
           const tier = standingTier(rec.reputation);
-          const label = buyerType === 'Private Estate' ? 'Частное поместье' : buyerType === 'Diplomatic Household' ? 'Дипломатический дом' : 'Судоходный консорциум';
           return (
-            <div key={buyerType} className="bg-slate-950 border-slate-800 rounded-xl p-4">
-              <div className="font-bold text-white text-sm">{label}</div>
+            <div key={buyerType} className="bg-slate-950 border-slate-800 rounded-xl p-4 min-w-0">
+              <div className="font-bold text-white text-sm truncate" title={label}>{label}</div>
               <div className="text-[10px] uppercase text-slate-500 font-semibold mt-0.5">
-                {locked ? <span className="text-red-400">Заблокировано (скандал)</span> : <span className="text-emerald-400">{tier === 'cold' ? 'Холодные' : tier === 'neutral' ? 'Нейтральные' : tier === 'trusted' ? 'Доверенные' : 'Благосклонные'} отношения</span>}
+                {locked ? <span className="text-red-400">Блок до нед. {rec.lockedUntilWeek}</span> : <span className="text-emerald-400">{tier === 'cold' ? 'Холодные' : tier === 'neutral' ? 'Нейтральные' : tier === 'trusted' ? 'Доверенные' : 'Благосклонные'}</span>}
               </div>
               <div className="grid grid-cols-2 gap-2 mt-2 text-xs font-mono">
-                <div className="flex justify-between"><span className="text-slate-500">Доверие</span><span className="text-white">{rec.reputation}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Скандалы</span><span className="text-red-400">{rec.scandals}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Макс. заказов</span><span className="text-white">{maxOrdersForStanding(rec.reputation)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Бонус к цене</span><span className="text-emerald-400">+{Math.min(20, rec.reputation * 4)}%</span></div>
+                <div className="flex justify-between gap-1"><span className="text-slate-500 truncate">Доверие</span><span className="text-white">{rec.reputation}</span></div>
+                <div className="flex justify-between gap-1"><span className="text-slate-500 truncate">Скандалы</span><span className="text-red-400">{rec.scandals}</span></div>
+                <div className="flex justify-between gap-1"><span className="text-slate-500 truncate">Макс. заказов</span><span className="text-white">{maxOrdersForStanding(rec.reputation)}</span></div>
+                <div className="flex justify-between gap-1"><span className="text-slate-500 truncate">Бонус</span><span className="text-emerald-400">+{Math.min(20, rec.reputation * 4)}%</span></div>
               </div>
             </div>
           );
@@ -4720,6 +4897,8 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
             marketRequest={gameState.marketRequest}
             onAcceptMarketRequest={acceptMarketRequest}
             onDeclineMarketRequest={declineMarketRequest}
+            marketDemand={gameState.marketDemand}
+            regionalStanding={gameState.regionalStanding}
           />
         )}
 
@@ -5665,15 +5844,20 @@ contracts={gameState.tradeSupplyContracts || []}
             funds={gameState.funds}
             pendingLots={gameState.auctionHouse.pendingLots}
             recentSales={gameState.auctionHouse.recentSales}
+            inspections={gameState.auctionHouse.inspections}
             auctioneer={auctionHouseStaff.auctioneer}
             appraiser={auctionHouseStaff.appraiser}
             auctioneerSaleBonus={auctionHouseEffects.auctioneerSaleBonus}
             administratorRequest={gameState.venueRequests?.auction_house ?? null}
+            inspectWeek={gameState.auctionHouse.inspectWeek}
+            inspectChargesUsed={gameState.auctionHouse.inspectChargesUsed}
             onAcceptRequest={acceptVenueRequest}
             onSellLot={sellAuctionLot}
             saleConsents={gameState.auctionHouse.pendingSaleConsents}
             onConfirmSale={confirmAuctionSale}
             onCancelSaleConsent={cancelAuctionSaleConsent}
+            onInspectLot={inspectAuctionLotAction}
+            onSellJunkyard={sellJunkyardAction}
             onOpenCaravans={() => setActiveTab('caravans')}
             pleasureHouseCharacters={gameState.roster.filter(c => c.assignedVenue !== 'pleasure_house')}
             onPreviewImage={setFullscreenImage}

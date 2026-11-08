@@ -31,6 +31,46 @@ const DICTIONARIES: Record<Lang, Record<string, string>> = {
     'backup.done.import': 'Восстановлено из файла',
     'backup.error': 'Ошибка',
 
+    // Contracts / supplies (0.6.6)
+    'contract.confirm.deliver': 'Подтвердить поставку',
+    'contract.deliver.confirm': 'Доставить {qty} пленник(ов) по контракту «{title}»?\nРиск скандала: {risk}\nШтраф за срыв срока: {penalty}',
+    'contract.deliver.confirm.noPenalty': 'Доставить {qty} пленник(ов) по контракту «{title}»?\nРиск скандала: {risk}',
+    'contract.deliver.risk': 'Риск скандала',
+    'contract.deliver.penalty': 'Штраф за срыв срока',
+    'contract.supply.sign.title': 'Подписать контракт поставки',
+    'contract.supply.sign.confirm': 'Подписать контракт поставки с {region}?\nДо {qty} чел./нед., {price}/гол., {weeks} нед.\nПрогноз риска срыва: {risk}',
+    'contract.supply.buy.title': 'Выкупить партию',
+    'contract.supply.buy.confirm': 'Выкупить до {qty} чел. у {region} за {cost}?\n{risk}\nПри срыве поставки партия этой недели не будет отгружена.',
+    'contract.supply.signed': 'Контракт с регионом {region} подписан.',
+    'contract.supply.bought': 'Куплено {qty} пленник(ов) у {region} за {cost}.',
+    'contract.supply.disrupted': 'Срыв поставки',
+    'contract.supply.disrupted.msg': 'Срыв поставки ({region}): {risk}. Партия недели не отгружена.',
+    'contract.supply.forecast': 'Прогноз риска',
+    'contract.supply.needSign': 'Сначала подпишите контракт.',
+    'contract.supply.noFunds': 'Недостаточно средств: одна голова стоит {price}.',
+    'contract.supply.lotBought': 'Недельная партия уже выкуплена.',
+    'contract.supply.filter.all': 'Все контракты',
+    'contract.supply.filter.unsigned': 'Не подписаны',
+    'contract.supply.filter.signed': 'Подписаны',
+    'contract.supply.filter.available': 'Есть партия',
+    'contract.supply.filter.soldOut': 'Квота выкуплена',
+    'contract.supply.search': 'Поиск по названию, покупателю, региону или описанию…',
+    'contract.supply.searchLabel': 'Поиск по контрактам поставок',
+    'contract.supply.filterLabel': 'Фильтр контрактов поставок',
+    'contract.supply.empty': 'Нет открытых поставок от регионов. Отправьте 5–15 торговых караванов в один регион и доведите их до прибытия — регион откроет поставку по партнёрской цене.',
+    'contract.supply.none': 'Нет контрактов по текущим условиям поиска. Измените фильтры или сбросьте их.',
+    'contract.supply.summary': 'Контрактов {shown}/{total} · подписано {signed}',
+    'contract.supply.signedState': 'Подписан · выкуп открыт',
+    'contract.supply.unsignedState': 'Не подписан · подпишите для выкупа',
+    'contract.supply.signAction': 'Подписать контракт',
+    'contract.supply.buyAction': 'Купить {qty} {word}',
+    'contract.supply.lotSold': 'Партия выкуплена',
+    'contract.supply.noMoneyShort': 'Недостаточно средств',
+    'contract.supply.progress': 'Прогресс поставки: {title}',
+    'contract.supply.lotLine': 'Партия {cost} · {left} доступно',
+    'contract.supply.quotaReset': 'Квота выкуплена до следующей недели',
+    'contract.supply.caravans': '{n} доставленных караванов',
+
     // Error boundary
     'error.title': 'Ошибка в компоненте',
     'error.retry': 'Попробовать снова',
@@ -76,6 +116,45 @@ const DICTIONARIES: Record<Lang, Record<string, string>> = {
     'backup.done.import': 'Restored from file',
     'backup.error': 'Error',
 
+    'contract.confirm.deliver': 'Confirm delivery',
+    'contract.deliver.confirm': 'Deliver {qty} captive(s) for contract "{title}"?\nScandal risk: {risk}\nTerm penalty: {penalty}',
+    'contract.deliver.confirm.noPenalty': 'Deliver {qty} captive(s) for contract "{title}"?\nScandal risk: {risk}',
+    'contract.deliver.risk': 'Scandal risk',
+    'contract.deliver.penalty': 'Term penalty',
+    'contract.supply.sign.title': 'Sign supply contract',
+    'contract.supply.sign.confirm': 'Sign supply contract with {region}?\nUp to {qty}/week, {price}/head, {weeks} weeks.\nRisk forecast: {risk}',
+    'contract.supply.buy.title': 'Buy shipment',
+    'contract.supply.buy.confirm': 'Buy up to {qty} from {region} for {cost}?\n{risk}\nIf disrupted, this week’s shipment is not delivered.',
+    'contract.supply.signed': 'Contract with {region} signed.',
+    'contract.supply.bought': 'Bought {qty} captives from {region} for {cost}.',
+    'contract.supply.disrupted': 'Supply disrupted',
+    'contract.supply.disrupted.msg': 'Supply disrupted ({region}): {risk}. This week’s shipment not delivered.',
+    'contract.supply.forecast': 'Risk forecast',
+    'contract.supply.needSign': 'Sign the contract first.',
+    'contract.supply.noFunds': 'Not enough funds: one captive costs {price}.',
+    'contract.supply.lotBought': 'This week’s lot already bought.',
+    'contract.supply.filter.all': 'All contracts',
+    'contract.supply.filter.unsigned': 'Unsigned',
+    'contract.supply.filter.signed': 'Signed',
+    'contract.supply.filter.available': 'Available lot',
+    'contract.supply.filter.soldOut': 'Quota bought',
+    'contract.supply.search': 'Search by title, buyer, region, or description…',
+    'contract.supply.searchLabel': 'Search supply contracts',
+    'contract.supply.filterLabel': 'Filter supply contracts',
+    'contract.supply.empty': 'No open regional supplies. Send 5–15 trade caravans to one region and deliver them — the region will open a partner supply.',
+    'contract.supply.none': 'No contracts match the current filters.',
+    'contract.supply.summary': 'Contracts {shown}/{total} · signed {signed}',
+    'contract.supply.signedState': 'Signed · purchases open',
+    'contract.supply.unsignedState': 'Unsigned · sign to buy',
+    'contract.supply.signAction': 'Sign contract',
+    'contract.supply.buyAction': 'Buy {qty} {word}',
+    'contract.supply.lotSold': 'Lot bought',
+    'contract.supply.noMoneyShort': 'Not enough funds',
+    'contract.supply.progress': 'Supply progress: {title}',
+    'contract.supply.lotLine': 'Lot {cost} · {left} available',
+    'contract.supply.quotaReset': 'Quota bought until next week',
+    'contract.supply.caravans': '{n} delivered caravans',
+
     'error.title': 'Component error',
     'error.retry': 'Try again',
     'error.unknown': 'Unknown error',
@@ -111,7 +190,10 @@ export function getLang(): Lang {
   return currentLang;
 }
 
-export function t(key: string, lang?: Lang): string {
-  const l = lang ?? currentLang;
-  return DICTIONARIES[l][key] ?? DICTIONARIES['ru'][key] ?? key;
+export function t(key: string, varsOrLang?: Record<string, string | number> | Lang, lang?: Lang): string {
+  const vars = typeof varsOrLang === 'object' && varsOrLang !== null ? varsOrLang : undefined;
+  const l = (typeof varsOrLang === 'string' ? varsOrLang : lang) ?? currentLang;
+  let out = DICTIONARIES[l][key] ?? DICTIONARIES['ru'][key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) out = out.replaceAll(`{${k}}`, String(v));
+  return out;
 }

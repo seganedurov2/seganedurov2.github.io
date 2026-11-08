@@ -4,6 +4,7 @@ import { FileSignature, Handshake, MapPin, PackagePlus, Truck, WalletCards } fro
 import { type Platform } from '../../terminology';
 import type { TradeSupplyContract } from '../../slaveContractsEngine';
 import { VenueToolbar } from '../venue';
+import { t } from '../../i18n';
 
 interface SupplyContractsPanelProps {
   contracts: TradeSupplyContract[];
@@ -73,7 +74,7 @@ export function SupplyContractsPanel({ contracts, funds, onSign, onBuy, platform
   if (active.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-slate-700 bg-slate-950 px-4 py-8 text-center text-xs leading-relaxed text-slate-400">
-        Нет открытых поставок от регионов. Отправьте <strong className="text-slate-200">5–15 торговых караванов в один регион</strong> и доведите их до прибытия — регион откроет поставку по партнёрской цене.
+        {t('contract.supply.empty')}
       </div>
     );
   }
@@ -83,25 +84,25 @@ export function SupplyContractsPanel({ contracts, funds, onSign, onBuy, platform
       <VenueToolbar
         query={query}
         onQueryChange={setQuery}
-        searchLabel="Поиск по контрактам поставок"
-        placeholder="Поиск по названию, покупателю, региону или описанию…"
-        summary={<span>Контрактов <strong className="font-mono text-slate-200">{visibleContracts.length}/{active.length}</strong> · подписано <strong className="font-mono text-emerald-300">{signedCount}</strong></span>}
+        searchLabel={t('contract.supply.searchLabel')}
+        placeholder={t('contract.supply.search')}
+        summary={<span>{t('contract.supply.summary', { shown: visibleContracts.length, total: active.length, signed: signedCount })}</span>}
         onReset={resetFilters}
         hasActiveFilters={hasFilters}
       >
-        <label htmlFor="supply-contract-filter" className="sr-only">Фильтр контрактов поставок</label>
+        <label htmlFor="supply-contract-filter" className="sr-only">{t('contract.supply.filterLabel')}</label>
         <select id="supply-contract-filter" value={filter} onChange={event => setFilter(event.target.value as ContractFilter)} className={CONTROL_CLASS}>
-          <option value="all">Все контракты</option>
-          <option value="unsigned">Не подписаны</option>
-          <option value="signed">Подписаны</option>
-          <option value="available">Есть партия</option>
-          <option value="sold_out">Квота выкуплена</option>
+          <option value="all">{t('contract.supply.filter.all')}</option>
+          <option value="unsigned">{t('contract.supply.filter.unsigned')}</option>
+          <option value="signed">{t('contract.supply.filter.signed')}</option>
+          <option value="available">{t('contract.supply.filter.available')}</option>
+          <option value="sold_out">{t('contract.supply.filter.soldOut')}</option>
         </select>
       </VenueToolbar>
 
       {visibleContracts.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-700 bg-slate-950 px-4 py-8 text-center text-xs text-slate-400">
-          Нет контрактов по текущим условиям поиска. Измените фильтры или сбросьте их.
+          {t('contract.supply.none')}
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-4">
@@ -133,7 +134,7 @@ export function SupplyContractsPanel({ contracts, funds, onSign, onBuy, platform
 
                   <p className={`mt-2 flex items-center gap-1 rounded-md border px-2 py-1.5 text-[10px] leading-relaxed ${signed ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-200' : 'border-amber-500/20 bg-amber-500/5 text-amber-200'}`}>
                     <FileSignature aria-hidden="true" className="h-3 w-3 shrink-0" />
-                    {signed ? 'Подписан · выкуп открыт' : 'Не подписан · подпишите для выкупа'}
+                    {signed ? t('contract.supply.signedState') : t('contract.supply.unsignedState')}
                   </p>
 
                   <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 border-y border-slate-800 py-2 text-[10px]">
@@ -141,26 +142,34 @@ export function SupplyContractsPanel({ contracts, funds, onSign, onBuy, platform
                     <div className="flex min-w-0 justify-between gap-1"><dt className="truncate text-slate-500">Квота</dt><dd className="shrink-0 font-mono text-slate-200">{contract.weeklyQuantity}/нед.</dd></div>
                     <div className="flex min-w-0 justify-between gap-1"><dt className="truncate text-slate-500">Куплено</dt><dd className="shrink-0 font-mono text-slate-200">{contract.purchasedThisWeek}/{contract.weeklyQuantity}</dd></div>
                     <div className="flex min-w-0 justify-between gap-1"><dt className="truncate text-slate-500">Качество</dt><dd className={`truncate rounded border px-1 font-semibold ${QUALITY_TONE[contract.quality]}`}>{QUALITY_LABELS[contract.quality]}</dd></div>
-                    <div className="flex min-w-0 justify-between gap-1"><dt className="truncate text-slate-500">Всего</dt><dd className="shrink-0 font-mono text-slate-200">{contract.totalPurchased}</dd></div>
+                    <div className="flex min-w-0 justify-between gap-1"><dt className="truncate text-slate-500">Срок</dt><dd className="shrink-0 font-mono text-slate-200">{contract.weeksRemaining}/{contract.termWeeks}</dd></div>
                     <div className="flex min-w-0 justify-between gap-1"><dt className="truncate text-slate-500">Потрачено</dt><dd className="shrink-0 font-mono text-rose-300">{formatMoney(contract.totalSpent)}</dd></div>
                   </dl>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-900" role="progressbar" aria-label={t('contract.supply.progress', { title: contract.title })} aria-valuemin={0} aria-valuemax={Math.max(1, contract.termWeeks)} aria-valuenow={Math.max(0, contract.termWeeks - contract.weeksRemaining)}>
+                    <div className="h-full rounded-full bg-sky-500" style={{ width: `${Math.min(100, ((contract.termWeeks - contract.weeksRemaining) / Math.max(1, contract.termWeeks)) * 100)}%` }} />
+                  </div>
+                  {contract.lastRiskReason ? (
+                    <p className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-2 py-1.5 text-[10px] leading-relaxed text-amber-200 break-words" title={contract.lastRiskReason}>
+                      {t('contract.supply.forecast')}: {contract.lastRiskReason}
+                    </p>
+                  ) : null}
 
                   <p className="mt-2 flex items-center gap-1 text-[10px] text-slate-400">
                     {lotSoldOut ? <PackagePlus aria-hidden="true" className="h-3.5 w-3.5 text-emerald-300" /> : <WalletCards aria-hidden="true" className="h-3.5 w-3.5 text-sky-300" />}
-                    {lotSoldOut ? 'Квота выкуплена до следующей недели' : `Партия ${formatMoney(lotCost)} · ${remainingLot} доступно`}
+                    {lotSoldOut ? t('contract.supply.quotaReset') : t('contract.supply.lotLine', { cost: formatMoney(lotCost), left: remainingLot })}
                   </p>
                   <p className="mt-1 flex items-center gap-1 text-[9px] text-slate-500">
-                    <Truck aria-hidden="true" className="h-3 w-3" /> {contract.caravansDelivered} доставленных караванов
+                    <Truck aria-hidden="true" className="h-3 w-3" /> {t('contract.supply.caravans', { n: contract.caravansDelivered })}
                   </p>
                 </div>
 
                 <div className="border-t border-slate-800 pt-2">
                   {!signed ? (
-                    <button type="button" onClick={() => onSign(contract.id)} className="min-h-8 w-full rounded-md bg-sky-700 px-2 text-[10px] font-bold text-white transition hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300">Подписать контракт</button>
+                    <button type="button" onClick={() => onSign(contract.id)} className="min-h-8 w-full rounded-md bg-sky-700 px-2 text-[10px] font-bold text-white transition hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300">{t('contract.supply.signAction')}</button>
                   ) : (
                     <>
                       <p className="mb-1.5 text-[9px] text-slate-500">
-                        {cannotAfford ? <>Недостаточно средств: нужно <strong className="text-red-300">{formatMoney(contract.pricePerHead)}</strong></> : <>Можно выкупить: <strong className={canBuy ? 'text-emerald-300' : 'text-slate-400'}>{affordableCount}</strong></>}
+                        {cannotAfford ? <>{t('contract.supply.noMoneyShort')}: <strong className="text-red-300">{formatMoney(contract.pricePerHead)}</strong></> : <>Можно выкупить: <strong className={canBuy ? 'text-emerald-300' : 'text-slate-400'}>{affordableCount}</strong></>}
                       </p>
                        <button
                          type="button"
@@ -168,7 +177,7 @@ export function SupplyContractsPanel({ contracts, funds, onSign, onBuy, platform
                          disabled={!canBuy}
                          className={`min-h-8 w-full rounded-md px-2 text-[10px] font-bold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 ${canBuy ? 'bg-emerald-700 text-white hover:bg-emerald-600' : 'cursor-not-allowed bg-slate-800 text-slate-500'}`}
                        >
-                         {lotSoldOut ? 'Партия выкуплена' : cannotAfford ? 'Недостаточно средств' : `Купить ${affordableCount} ${memberWord(affordableCount, platform)}`}
+                         {lotSoldOut ? t('contract.supply.lotSold') : cannotAfford ? t('contract.supply.noMoneyShort') : t('contract.supply.buyAction', { qty: affordableCount, word: memberWord(affordableCount, platform) })}
                        </button>
 
                     </>
