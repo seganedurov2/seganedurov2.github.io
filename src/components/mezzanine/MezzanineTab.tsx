@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
-import { FileText } from 'lucide-react';
+import { FileText, Monitor } from 'lucide-react';
 import { TerrainGenerator, t, type Lang, type Heightmap } from '../../terrain';
 import type { MapCenter } from '../world/KalinkovichiGame';
 import { KalinkovichiMap } from './KalinkovichiMap';
@@ -116,14 +116,17 @@ interface MezzanineTabProps {
     mezzanine?: MezzanineViewState;
     cityPlan?: CityPlanSave | null;
     cityEconomy?: CityEconomyState | null;
+    funds?: number;
   };
   /** Persists the map view into the campaign save (0.3.7). */
   onViewChange?: (view: MezzanineViewState) => void;
   /** Persists the active city plan into the current campaign save. */
   onCityPlanChange?: (plan: CityPlanSave | null) => void;
+  /** Deducts campaign funds when the player starts construction in the city plan. */
+  onFundsChange?: (funds: number) => void;
 }
 
-export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanChange, activeTab }: MezzanineTabProps) {
+export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanChange, onFundsChange, activeTab }: MezzanineTabProps) {
   const [lang] = useState<Lang>('ru');
   const [sectionsOpen, setSectionsOpen] = useState(false);
   const [grid, setGrid] = useState<Heightmap | null>(null);
@@ -655,6 +658,8 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
             onRequestNewCity={requestNewCity}
             peopleCount={gameState?.roster.length ?? 0}
             cityEconomy={gameState?.cityEconomy}
+            funds={gameState?.funds ?? 0}
+            onFundsChange={onFundsChange}
           />
         </Suspense>
         <button
@@ -759,6 +764,13 @@ export function MezzanineTab({ onOpenTab, gameState, onViewChange, onCityPlanCha
               >
                 <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                 <span className="truncate">{JOURNAL_TAB_LABEL}</span>
+              </button>
+              <button
+                onClick={() => onOpenTab('mezzanine_gta6')}
+                className="flex items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition text-slate-300 hover:bg-slate-700 hover:text-white border-t border-slate-800 mt-1 pt-1"
+              >
+                <Monitor className="h-3.5 w-3.5 shrink-0 text-pink-400" />
+                <span className="truncate">GTA-6</span>
               </button>
             </div>
           )}

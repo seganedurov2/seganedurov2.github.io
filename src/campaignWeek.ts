@@ -31,8 +31,9 @@ import type { CaptureOperation } from './captureOpsEngine';
 import { formatMoney } from './currency';
 import { prestigeRevenueMultiplier } from './metaProgressEngine';
 import { calculateVenueSynergies, type SynergyResult } from './synergyEngine';
+import { actForWeek } from './campaignScript';
 import { getRandomEventWithAuction, type GameEvent } from './eventsEngine';
-import { chooseExpansionEvent } from './expansionEventsEngine';
+import { chooseExpansionEvent, applyDeferredExpansionEffects } from './expansionEventsEngine';
 import { ACHIEVEMENT_BY_ID, evaluateAchievements } from './metaProgressEngine';
 import { calculateAttractiveness } from './gameEngine';
 import { advanceBankruptcyWeek } from './bankruptcyEngine';
@@ -152,21 +153,30 @@ export interface WeeklyAdvance {
  * fourth week the auction is kept, otherwise a 35% chance opens an expansion
  * event (65%) or a random event.
  */
-function pickWeeklyEvent(state: ManagedCampaignState, funds: number): GameEvent | null {
-  if (!rollChance(0.35)) return null;
-  if (state.week % 4 === 0) return getRandomEventWithAuction(state.week);
-  const expansionEvent = chooseExpansionEvent({
+function pickWeeklyEvent(
+  state: ManagedCampaignState,
+  funds: number,
+  random: () => number = Math.random
+): GameEvent | null {
+  if (random() >= 0.35) return null;
+  if (state.week % 4 === 0) return getRandomEventWithAuction({ ...state, funds }, random);
+  const expansionContext = {
     week: state.week,
     funds,
+    reputation: state.reputation,
+    actId: state.campaignScript?.actId ?? actForWeek(state.week).id,
     employees: state.employees,
-    auxiliaryBuildings: state.auxiliaryBuildings
-  }, state.seenExpansionEventIds);
-  if (expansionEvent && rollChance(0.65)) return expansionEvent as unknown as GameEvent;
-  return getRandomEventWithAuction(state.week);
+    auxiliaryBuildings: state.auxiliaryBuildings,
+    recentEventIds: (state.eventHistory ?? []).map(entry => entry.id),
+    eventCooldowns: state.eventCooldowns ?? {}
+  };
+  const expansionEvent = chooseExpansionEvent(expansionContext, state.seenExpansionEventIds, random);
+  if (expansionEvent && random() < 0.65) return expansionEvent as unknown as GameEvent;
+  return getRandomEventWithAuction({ ...state, funds }, random);
 }
 
 export function advanceCampaignWeek(state: ManagedCampaignState, deps: WeeklyDeps): WeeklyAdvance {
-  const gameState = state;
+  const gameState = applyDeferredExpansionEffects(state) as ManagedCampaignState;
   let currentFunds = gameState.funds;
   const upgraded = advanceBuildingUpgrades(gameState.auxiliaryBuildings);
   const auxiliaryBuildings = upgraded.buildings;
@@ -871,13 +881,14 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     const cityEconomy = advanceCityEconomy({
       plan: gameState.cityPlan,
       week: gameState.week + 1,
-      random: Math.random
+      random: Math.random,
+      previousReport: gameState.cityEconomy?.lastReport ?? null,
     });
-    const cityIncome = cityEconomy.report.income.employmentTax + cityEconomy.report.income.parks;
-    const cityExpenses = cityEconomy.report.expenses.upkeep + cityEconomy.report.expenses.unemployment;
+    const cityIncome = cityEconomy.report.income.employmentTax + cityEconomy.report.income.parks + cityEconomy.report.income.fees;
+    const cityExpenses = cityEconomy.report.expenses.upkeep + cityEconomy.report.expenses.unemployment + cityEconomy.report.expenses.construction;
     const cityConstructionSpend = cityEconomy.report.constructionSpend;
     if (cityEconomy.report.built > 0) {
-      currentFunds += cityIncome - cityExpenses - cityConstructionSpend;
+      currentFunds += cityEconomy.treasuryDelta;
     }
 
     // Warehouse mezzanine weekly upkeep: scales with level and automation.
@@ -1047,7 +1058,13 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
   // Ambushes take priority; on every fourth week preserve the existing auction.
   const scheduledEvent = pendingRaids.length > 0
     ? null
-    : pickWeeklyEvent(gameState, currentFunds);
+    : pickWeeklyEvent({ ...gameState, funds: currentFunds }, currentFunds);
+  const nextEventHistory = scheduledEvent
+    ? [...(gameState.eventHistory ?? []), { id: scheduledEvent.id, week: nextWeekNumber, kind: ('kind' in scheduledEvent ? 'expansion' : scheduledEvent.id === 'event_slave_auction' ? 'auction' : 'legacy') as 'expansion' | 'legacy' | 'auction' }].slice(-40)
+    : (gameState.eventHistory ?? []).slice(-40);
+  const nextEventCooldowns = scheduledEvent && 'kind' in scheduledEvent && (scheduledEvent as any).cooldownWeeks
+    ? { ...(gameState.eventCooldowns ?? {}), [scheduledEvent.id]: nextWeekNumber + Number((scheduledEvent as any).cooldownWeeks || 0) }
+    : (gameState.eventCooldowns ?? {});
 
   // The achievement toast is the caller's to show: the first unlocked one.
   const achievementNotify = achievementEvaluation.newlyUnlocked.length > 0
@@ -1058,7 +1075,6 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     : null;
   return {
     nextState: {
-      ...gameState,
       ...gameState,
       week: gameState.week + 1,
       funds: currentFunds,
@@ -1138,12 +1154,14 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
          scheduledTreatments: updatedTreatments,
          totalRevenue: gameState.beautySalon.totalRevenue + salonTreatmentRevenue
        },
-        // Котельная: новое состояние котлов, топлива и температуры контура.
-        boilerHouse: boilerWeek.state,
-        log: [...newLogs, ...gameState.log].slice(0, 50),
-        // Campaign script follows the week: crossing week 30/60/85 moves the
-        // run into the next act, and the log records the transition.
-        campaignScript: advanceCampaignScript(gameState.campaignScript ?? createCampaignScript(gameState.week), nextWeekNumber),
+         // Котельная: новое состояние котлов, топлива и температуры контура.
+         boilerHouse: boilerWeek.state,
+         eventHistory: nextEventHistory,
+         eventCooldowns: nextEventCooldowns,
+         log: [...newLogs, ...gameState.log].slice(0, 50),
+         // Campaign script follows the week: crossing week 30/60/85 moves the
+         // run into the next act, and the log records the transition.
+         campaignScript: advanceCampaignScript(gameState.campaignScript ?? createCampaignScript(gameState.week), nextWeekNumber),
         // Администраторы площадок выносят новые запросы и предложения
         // с учётом только что подсчитанных доходов и расходов.
         venueRequests: generateVenueRequests({

@@ -129,13 +129,23 @@ export interface EscortContribution {
   loyalty: number;
 }
 
+export type CampaignActCondition = 'founding' | 'expansion' | 'syndicate' | 'reckoning' | 1 | 2 | 3 | 4;
+
 export interface ExpansionEventCondition {
   minWeek?: number;
   maxWeek?: number;
   minFunds?: number;
+  maxFunds?: number;
+  minReputation?: number;
+  maxReputation?: number;
+  /** Campaign act id (or 1-4). All listed acts are allowed when provided. */
+  acts?: CampaignActCondition[];
   buildingId?: BuildingId;
   minBuildingLevel?: number;
   employeeSpecialty?: EmployeeSpecialty;
+  /** Minimum active (status active) employees, total or by specialty. */
+  minEmployees?: number;
+  minActiveEmployees?: number;
 }
 
 export type ExpansionEventEffect =
@@ -145,11 +155,30 @@ export type ExpansionEventEffect =
   | { type: 'employeeExperience'; delta: number; specialty?: EmployeeSpecialty }
   | { type: 'buildingLevel'; buildingId: BuildingId; delta: number };
 
+export interface DeferredExpansionEventEffect {
+  id: string;
+  sourceEventId: string;
+  sourceChoiceId: string;
+  /** Campaign week when the effect becomes eligible to apply. */
+  triggerWeek: number;
+  label: string;
+  effects: ExpansionEventEffect[];
+}
+
 export interface ExpansionEventChoice {
   id: string;
   text: string;
   resultMessage: string;
   effects: ExpansionEventEffect[];
+  /** Serializable delayed effects applied on a future week. */
+  deferredEffects?: DeferredExpansionEventEffect[];
+  /** Optional risk/consequence hint shown in UI. */
+  riskHint?: string;
+  /** Optional explicit availability reason; engine may also compute reasons. */
+  disabledReason?: string;
+  /** Declarative affordability/condition guard for UI/engine. */
+  requiresFunds?: number;
+  requiresReputation?: number;
 }
 
 export interface ExpansionEvent {
@@ -160,11 +189,27 @@ export interface ExpansionEvent {
   category: ExpansionEventCategory;
   conditions: ExpansionEventCondition[];
   choices: ExpansionEventChoice[];
+  /** Base selection weight; defaults to 1. Higher values are more likely. */
+  weight?: number;
+  /** Weeks before this event may appear again after being shown. */
+  cooldownWeeks?: number;
+}
+
+export interface ExpansionEventHistoryEntry {
+  id: string;
+  week: number;
+  kind: 'expansion' | 'legacy' | 'auction';
+  choiceId?: string;
 }
 
 export interface ExpansionEventContext {
   week: number;
   funds: number;
+  reputation: number;
+  /** Campaign act id/number when available; omitted for legacy contexts. */
+  actId?: CampaignActCondition;
   employees: Employee[];
   auxiliaryBuildings: AuxiliaryBuildingState[];
+  recentEventIds?: string[];
+  eventCooldowns?: Record<string, number>;
 }

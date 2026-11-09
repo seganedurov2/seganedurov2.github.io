@@ -7,7 +7,7 @@ import type { CampaignState, Caravan, Character, Dependent, LoanApplication, Pre
 import { generateCharacter, pickAge, pickCountry, pickCity } from './gameEngine';
 import { BASE_EMPLOYEE_SLOTS, createEmployeeCandidates } from './employeesEngine';
 import { generateSlaveContract, generateCaptiveLotOffer, type CaptiveLotOffer, type SlaveBuyerContract, type StandingMap, type TradeSupplyContract } from './slaveContractsEngine';
-import type { Employee, EmployeeCandidate, EmployeeGender, EmployeeSpecialty, AuxiliaryBuildingState, ExpansionEvent } from './expansionTypes';
+import type { Employee, EmployeeCandidate, EmployeeGender, EmployeeSpecialty, AuxiliaryBuildingState, ExpansionEvent, ExpansionEventHistoryEntry, DeferredExpansionEventEffect } from './expansionTypes';
 import type { CaptureOperation } from './captureOpsEngine';
 import type { HospitalEquipmentId, HospitalState } from './hospitalEngine';
 import { createHospitalState, COMPANY_PROPERTY_AGE_DAYS, GESTATION_DAYS, reconcilePatients } from './hospitalEngine';
@@ -64,6 +64,12 @@ export interface ManagedCampaignState extends CampaignState {
   auxiliaryBuildings: AuxiliaryBuildingState[];
   seenExpansionEventIds: string[];
   pendingExpansionEvents?: ExpansionEvent[];
+  /** 0.6.8: recent event picks (expansion/legacy/auction) for anti-repeat, save-compatible. */
+  eventHistory?: ExpansionEventHistoryEntry[];
+  /** 0.6.8: event id -> week when it may appear again. */
+  eventCooldowns?: Record<string, number>;
+  /** 0.6.8: serializable delayed consequences from event choices. */
+  deferredEventEffects?: DeferredExpansionEventEffect[];
   captureOperations: CaptureOperation[];
   hospital: HospitalState;
   restZone: RestZoneState;
@@ -179,6 +185,9 @@ export function createInitialCampaign(options: InitialCampaignOptions = {}): Man
     hiringSlots: BASE_EMPLOYEE_SLOTS,
     auxiliaryBuildings: createInitialBuildings(),
     seenExpansionEventIds: [],
+    eventHistory: [],
+    eventCooldowns: {},
+    deferredEventEffects: [],
     metaProgress: createInitialMetaProgress(),
     weeklyReports: [],
     beautySalon: {
@@ -250,6 +259,57 @@ function cloneSampleContracts(): ClientContract[] {
 const BANKRUPTCY_INITIATORS: BankruptcyInitiator[] = ['debtor', 'authorized_bodies'];
 const BANKRUPTCY_PATHS: BankruptcyPath[] = ['court', 'bank_board'];
 const BANKRUPTCY_PROCEDURES: BankruptcyProcedure[] = ['financial_recovery', 'external_management', 'settlement_agreement'];
+
+function normalizeEventHistory(raw: unknown): ExpansionEventHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isRecord)
+    .map(entry => {
+      const kind = entry.kind === 'expansion' || entry.kind === 'legacy' || entry.kind === 'auction' ? entry.kind : 'legacy';
+      const id = typeof entry.id === 'string' ? entry.id : null;
+      const week = Math.max(1, Math.floor(Number(entry.week) || 0));
+      if (!id || !week) return null;
+      const normalized: ExpansionEventHistoryEntry = { id, week, kind };
+      if (typeof entry.choiceId === 'string' && entry.choiceId) normalized.choiceId = entry.choiceId;
+      return normalized;
+    })
+    .filter((entry): entry is ExpansionEventHistoryEntry => entry !== null)
+    .slice(-40);
+}
+
+function normalizeEventCooldowns(raw: unknown): Record<string, number> {
+  if (!isRecord(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (typeof id !== 'string' || !id) continue;
+    const week = Math.floor(Number(value) || 0);
+    if (week > 0) out[id] = week;
+  }
+  return out;
+}
+
+function normalizeDeferredEventEffects(raw: unknown): DeferredExpansionEventEffect[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isRecord)
+    .map((entry, index) => {
+      const effects = Array.isArray(entry.effects)
+        ? entry.effects.filter((effect): effect is DeferredExpansionEventEffect['effects'][number] => isRecord(effect) && typeof effect.type === 'string')
+        : [];
+      if (!effects.length) return null;
+      const triggerWeek = Math.max(1, Math.floor(Number(entry.triggerWeek) || 1));
+      return {
+        id: typeof entry.id === 'string' && entry.id ? entry.id : `deferred_${index + 1}`,
+        sourceEventId: typeof entry.sourceEventId === 'string' ? entry.sourceEventId : 'unknown_event',
+        sourceChoiceId: typeof entry.sourceChoiceId === 'string' ? entry.sourceChoiceId : 'unknown_choice',
+        triggerWeek,
+        label: typeof entry.label === 'string' && entry.label ? entry.label : 'Отложенный эффект',
+        effects
+      } satisfies DeferredExpansionEventEffect;
+    })
+    .filter((entry): entry is DeferredExpansionEventEffect => entry !== null)
+    .slice(-40);
+}
 
 function normalizeBankruptcyCase(raw: unknown): BankruptcyCase | null {
   if (!isRecord(raw)) return null;
@@ -514,13 +574,29 @@ function normalizeCharacter(character: Character, fallbackWeek = 1): Character {
 
 /**
  * Normalizes a saved caravan. Legacy saves stored a boolean "raid already fired"
- * flag; that has become a per-caravan ambush count.
+ * flag; that has become a per-caravan ambush count. 0.7.1 adds insurance/history.
  */
 function normalizeCaravan(caravan: Caravan): Caravan {
   const weeksTotal = Math.max(1, Math.floor(Number(caravan.weeksTotal) || 3));
   const legacyRaidFlag = (caravan as Caravan & { raidResolved?: boolean }).raidResolved;
   const raidsTriggered = Math.floor(Number(caravan.raidsTriggered ?? (legacyRaidFlag ? 1 : 0)));
   const endWeek = Number(caravan.endWeek);
+  const insurancePlan = (['none', 'basic', 'standard', 'full'] as const).includes(caravan.insurancePlan as any)
+    ? (caravan.insurancePlan as Caravan['insurancePlan'])
+    : 'none';
+  const insurancePremium = Math.max(0, Math.floor(Number(caravan.insurancePremium) || 0));
+  const incidentHistory = Array.isArray(caravan.incidentHistory)
+    ? caravan.incidentHistory
+        .filter((e): e is NonNullable<Caravan['incidentHistory']>[number] => Boolean(e && typeof e === 'object' && typeof (e as any).summary === 'string'))
+        .slice(-20)
+        .map(e => ({
+          week: Math.max(1, Math.floor(Number(e.week) || 1)),
+          kind: e.kind === 'raid' || e.kind === 'loss' || e.kind === 'arrival' ? e.kind : 'raid',
+          summary: String(e.summary).slice(0, 240),
+          ...(Number.isFinite(Number(e.fundsDelta)) ? { fundsDelta: Math.floor(Number(e.fundsDelta)) } : {}),
+          ...(Number.isFinite(Number(e.insurancePayout)) ? { insurancePayout: Math.floor(Number(e.insurancePayout)) } : {})
+        }))
+    : [];
   return {
     ...caravan,
     weeksTotal,
@@ -528,7 +604,10 @@ function normalizeCaravan(caravan: Caravan): Caravan {
     status: caravan.status === 'completed' || caravan.status === 'raided' || caravan.status === 'lost' ? caravan.status : 'traveling',
     raidsTriggered: Number.isFinite(raidsTriggered) && raidsTriggered > 0 ? raidsTriggered : 0,
     endWeek: Number.isFinite(endWeek) && endWeek > 0 ? endWeek : (caravan.status === 'completed' || caravan.status === 'raided' || caravan.status === 'lost' ? undefined : caravan.endWeek),
-    dispatchedWeek: Number(caravan.dispatchedWeek) > 0 ? Math.floor(Number(caravan.dispatchedWeek)) : caravan.dispatchedWeek
+    dispatchedWeek: Number(caravan.dispatchedWeek) > 0 ? Math.floor(Number(caravan.dispatchedWeek)) : caravan.dispatchedWeek,
+    insurancePlan,
+    insurancePremium,
+    incidentHistory
   };
 }
 
@@ -840,6 +919,9 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
     auxiliaryBuildings: buildings,
     seenExpansionEventIds: Array.isArray(parsed.seenExpansionEventIds) ? parsed.seenExpansionEventIds.filter((id): id is string => typeof id === 'string') : [],
     pendingExpansionEvents: Array.isArray(parsed.pendingExpansionEvents) ? parsed.pendingExpansionEvents : [],
+    eventHistory: normalizeEventHistory(parsed.eventHistory),
+    eventCooldowns: normalizeEventCooldowns(parsed.eventCooldowns),
+    deferredEventEffects: normalizeDeferredEventEffects(parsed.deferredEventEffects),
     beautySalon: {
       ...defaults.beautySalon,
       ...(parsed.beautySalon as Partial<BeautySalonState> | undefined),
@@ -897,5 +979,9 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
 export function readCampaignFromStorage(slotNum = 1): ManagedCampaignState | null {
   const saved = localStorage.getItem(`emporium_save_slot_${slotNum}`) || (slotNum === 1 ? localStorage.getItem('emporium_save_06') : null);
   if (!saved) return null;
-  return migrateCampaignState(JSON.parse(saved));
+  try {
+    return migrateCampaignState(JSON.parse(saved));
+  } catch {
+    return null;
+  }
 }

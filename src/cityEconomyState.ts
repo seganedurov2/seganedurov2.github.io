@@ -70,15 +70,19 @@ function normalizeReport(raw: unknown): CityEconomyReport | null {
     income: {
       employmentTax: nonNegative(income.employmentTax),
       parks: nonNegative(income.parks),
+      fees: nonNegative(income.fees),
     },
     expenses: {
       upkeep: nonNegative(expenses.upkeep),
       unemployment: nonNegative(expenses.unemployment),
+      construction: nonNegative(expenses.construction),
     },
     surplus: Math.max(-MAX_MONEY, Math.min(MAX_MONEY, finiteInt(raw.surplus))),
     started: started.slice(0, 2),
     constructionSpend: nonNegative(raw.constructionSpend),
     log,
+    events: [],
+    previousWeek: null,
   };
 }
 

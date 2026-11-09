@@ -25,11 +25,12 @@ import { REGIONS, calculateAttractiveness, generateSlaveCharacter } from './game
 import type { GameEvent, EventChoice } from './eventsEngine';
 import { getRandomEventWithAuction } from './eventsEngine';
 import type { BuildingId, EmployeeSpecialty, ExpansionEvent, ExpansionEventChoice } from './expansionTypes';
-import { chooseExpansionEvent, applyExpansionEventChoice } from './expansionEventsEngine';
+import { chooseExpansionEvent, applyExpansionEventChoice, expansionChoiceAvailability, expansionChoiceSummary } from './expansionEventsEngine';
 import { applyClinicRecovery, calculateBuildingWeeklyEffects, getBuildingActionCost, getBuildingDefinition, healthFromExact, specialtiesForSlot, startBuildingUpgrade, totalPostCount } from './buildingsEngine';
 import { advanceEmployeesWeek, createEmployeeCandidates, EMPLOYEE_CANDIDATE_CAP, ensureEmployeeCandidatesForVacancies, hiringSlotUpkeep, makeHiredEmployee, quoteHiringSlot, refreshEmployeeCandidates, rerollEmployeeCandidates, getVacantSpecialties, fitsSpecialty, requiredGenderForSpecialty, specialtyDefinitionOf } from './employeesEngine';
 import { buildChiefDoctorReport } from './chiefDoctorEngine';
 import { calculateStaffing } from './staffingCalculator';
+import { backupSlot, readSlot } from './campaignPersistence';
 import { createInitialCampaign, migrateCampaignState, readCampaignFromStorage, type ManagedCampaignState } from './saveState';
 import {
   WAREHOUSE_MAX_LEVEL,
@@ -159,7 +160,7 @@ import { SettingsModal } from './components/settings/SettingsModal';
 import { loadSettings, saveSettings, type AppSettings } from './settings';
 import { setPortrait3dEnabled } from './portrait3dFlag';
 import { setOrientationLock, getTelegramStartParam } from './telegram';
-import { hasSessionKey, clearSessionKey, encrypt, decryptAsync, loadDataProtection, audit } from './dataProtection';
+import { hasSessionKey, clearSessionKey, encrypt, loadDataProtection, audit } from './dataProtection';
 import { SessionPasswordDialog } from './components/security/SessionPasswordDialog';
 import { assetUrl } from './assetUrl';
 import { ceoPortraitFileNames } from './portraitAssets';
@@ -167,6 +168,7 @@ import { BeautySalonTab } from './components/salon/BeautySalonTab';
 import { MezzanineWarehouseTab } from './components/warehouse/MezzanineWarehouseTab';
 import { MultiplayerPanel } from './components/multiplayer/MultiplayerPanel';
 import { MezzanineJournalTab } from './components/mezzanine/MezzanineJournalTab';
+import { MezzanineGTA6Tab } from './components/mezzanine/MezzanineGTA6Tab';
 import { WastelandTab } from './components/wasteland/WastelandTab';
 import { VenueBanner, VENUE_APPEARANCES } from './components/venue';
 import {
@@ -644,6 +646,7 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
   };
 
   const saveGameToSlot = async (slotNum: number) => {
+    backupSlot(slotNum);
     const updatedState = { ...gameState, slot: slotNum, timestamp: new Date().toLocaleString() };
     setGameState(updatedState);
     const dp = loadDataProtection();
@@ -656,28 +659,24 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
   };
 
   const loadGameFromSlot = async (slotNum: number) => {
-    const dp = loadDataProtection();
-    const raw = localStorage.getItem(getSlotKey(slotNum)) || (slotNum === 1 ? localStorage.getItem('emporium_save_06') : null);
-    if (!raw) {
-      showNotify(`Слот ${slotNum} пуст.`);
+    const result = await readSlot(slotNum);
+    if (!result.ok) {
+      if (result.reason === 'empty') {
+        showNotify(`Слот ${slotNum} пуст.`);
+      } else if (result.reason === 'undecryptable') {
+        showNotify(`Не удалось расшифровать слот ${slotNum}: ключ сессии не подходит.`);
+      } else {
+        showNotify(`Слот ${slotNum} повреждён и не может быть загружен.`);
+      }
       return;
     }
     try {
-      let data = raw;
-      if (dp.encryption_at_rest && hasSessionKey()) {
-        const decrypted = await decryptAsync(raw);
-        if (decrypted !== raw) data = decrypted;
-        else {
-          showNotify(`Не удалось расшифровать слот ${slotNum}: ключ сессии не подходит.`);
-          return;
-        }
-      }
-      setGameState(migrateCampaignState(JSON.parse(data)));
+      setGameState(migrateCampaignState(result.data));
       setCurrentScreen('playing');
       showNotify(`Кампания загружена из слота ${slotNum}!`);
       audit('campaign_load_slot', String(slotNum));
     } catch {
-      showNotify(`Не удалось загрузить слот ${slotNum}.`);
+      showNotify(`Слот ${slotNum} повреждён и не может быть загружен.`);
     }
   };
 
@@ -705,6 +704,13 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
     setGameState(prev => {
       if (JSON.stringify(prev.cityPlan) === JSON.stringify(cityPlan)) return prev;
       return { ...prev, cityPlan };
+    });
+  }, []);
+
+  const handleFundsChange = useCallback((funds: number) => {
+    setGameState(prev => {
+      if (prev.funds === funds) return prev;
+      return { ...prev, funds };
     });
   }, []);
 
@@ -2399,13 +2405,14 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     const cityEconomy = advanceCityEconomy({
       plan: gameState.cityPlan,
       week: gameState.week + 1,
-      random: Math.random
+      random: Math.random,
+      previousReport: gameState.cityEconomy?.lastReport ?? null,
     });
-    const cityIncome = cityEconomy.report.income.employmentTax + cityEconomy.report.income.parks;
-    const cityExpenses = cityEconomy.report.expenses.upkeep + cityEconomy.report.expenses.unemployment;
+    const cityIncome = cityEconomy.report.income.employmentTax + cityEconomy.report.income.parks + cityEconomy.report.income.fees;
+    const cityExpenses = cityEconomy.report.expenses.upkeep + cityEconomy.report.expenses.unemployment + cityEconomy.report.expenses.construction;
     const cityConstructionSpend = cityEconomy.report.constructionSpend;
     if (cityEconomy.report.built > 0) {
-      currentFunds += cityIncome - cityExpenses - cityConstructionSpend;
+      currentFunds += cityEconomy.treasuryDelta;
       newLogs.push(...cityEconomy.report.log);
     }
 
@@ -2711,16 +2718,20 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     } else if (rollChance(0.35)) {
       const nextWeek = gameState.week + 1;
       if (nextWeek % 4 === 0) {
-        setActiveEvent(getRandomEventWithAuction(nextWeek));
+        setActiveEvent(getRandomEventWithAuction({ ...gameState, week: nextWeek, funds: currentFunds }));
       } else {
         const expansionEvent = chooseExpansionEvent({
           week: nextWeek,
           funds: currentFunds,
+          reputation: gameState.reputation,
+          actId: gameState.campaignScript?.actId ?? actForWeek(nextWeek).id,
           employees: employeeWeek.employees,
-          auxiliaryBuildings: gameState.auxiliaryBuildings
+          auxiliaryBuildings: gameState.auxiliaryBuildings,
+          recentEventIds: (gameState.eventHistory ?? []).map(entry => entry.id),
+          eventCooldowns: gameState.eventCooldowns ?? {}
         }, gameState.seenExpansionEventIds);
         if (expansionEvent && rollChance(0.65)) setActiveEvent(expansionEvent);
-        else setActiveEvent(getRandomEventWithAuction(nextWeek));
+        else setActiveEvent(getRandomEventWithAuction({ ...gameState, week: nextWeek, funds: currentFunds }));
       }
     }
 
@@ -3064,22 +3075,44 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
 
   const handleEventChoice = (choice: EventChoice | ExpansionEventChoice) => {
     if (activeEvent && 'kind' in activeEvent && 'effects' in choice) {
+      const availability = expansionChoiceAvailability(choice, gameState);
+      if (!availability.available) {
+        showNotify(availability.reason || 'Выбор недоступен.');
+        return;
+      }
       setGameState(prev => applyExpansionEventChoice(prev, activeEvent, choice));
       showNotify(choice.resultMessage);
       setActiveEvent(null);
       return;
     }
     if (!('fundsDelta' in choice) || !('reputationDelta' in choice)) return;
+    const legacyCost = Math.max(0, choice.requiresFunds ?? 0, -(choice.fundsDelta ?? 0));
+    const legacyRepCost = Math.max(0, choice.requiresReputation ?? 0, -(choice.reputationDelta ?? 0));
+    if (gameState.funds < legacyCost) {
+      showNotify(`Недостаточно средств: нужно ${formatMoney(legacyCost)}.`);
+      return;
+    }
+    if (gameState.reputation < legacyRepCost) {
+      showNotify(`Недостаточно репутации: нужно ${legacyRepCost}.`);
+      return;
+    }
     // Auction house (Idea 4): entering the lot opens the bidding flow instead of
     // resolving the event directly.
     if (choice.startsAuction) {
       const lotQuality: 'high' | 'elite' = rollChance(0.7) ? 'high' : 'elite';
+      const activeEventId = activeEvent?.id ?? 'event_slave_auction';
+      const activeEventWeek = gameState.week;
       setAuction({
         currentBid: 18000 + rollInt(12000),
         round: 1,
         lotQuality,
         lotName: lotQuality === 'elite' ? 'Элитная пленница (редкий профиль)' : 'Пленница высокого класса'
       });
+      setGameState(prev => ({
+        ...prev,
+        eventHistory: [...(prev.eventHistory ?? []), { id: activeEventId, week: activeEventWeek, kind: 'auction' as const }].slice(-40),
+        eventCooldowns: choice.cooldownWeeks ? { ...(prev.eventCooldowns ?? {}), [activeEventId]: activeEventWeek + choice.cooldownWeeks } : (prev.eventCooldowns ?? {})
+      }));
       setActiveEvent(null);
       return;
     }
@@ -3087,6 +3120,8 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
       ...prev,
       funds: prev.funds + (choice.fundsDelta ?? 0),
       reputation: Math.min(100, Math.max(0, prev.reputation + (choice.reputationDelta ?? 0))),
+      eventHistory: [...(prev.eventHistory ?? []), { id: activeEvent?.id ?? 'unknown_event', week: prev.week, kind: 'legacy' as const }].slice(-40),
+      eventCooldowns: activeEvent && choice.cooldownWeeks ? { ...(prev.eventCooldowns ?? {}), [activeEvent.id]: prev.week + choice.cooldownWeeks } : (prev.eventCooldowns ?? {}),
       log: [`Результат события: ${choice.resultMessage}`, ...prev.log]
     }));
     showNotify(choice.resultMessage);
@@ -4370,20 +4405,31 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
 
             <div className="space-y-3">
               {activeEvent.choices.map((choice, idx) => {
-                const choiceCost = 'effects' in choice
-                  ? choice.effects.reduce((sum, effect) => sum + (effect.type === 'funds' ? Math.max(0, -effect.delta) : 0), 0)
-                  : Math.max(0, -(choice.fundsDelta ?? 0));
-                const cannotAfford = choiceCost > gameState.funds;
+                const legacy = !('effects' in choice);
+                const availability = !legacy ? expansionChoiceAvailability(choice, gameState) : (() => {
+                  const cost = Math.max(0, choice.requiresFunds ?? 0, -(choice.fundsDelta ?? 0));
+                  const rep = Math.max(0, choice.requiresReputation ?? 0, -(choice.reputationDelta ?? 0));
+                  if (gameState.funds < cost) return { available: false, reason: `Недостаточно средств: нужно ${formatMoney(cost)}.` };
+                  if (gameState.reputation < rep) return { available: false, reason: `Недостаточно репутации: нужно ${rep}.` };
+                  return { available: true as const, reason: undefined };
+                })();
+                const summary = !legacy ? expansionChoiceSummary(choice) : [
+                  ...(choice.fundsDelta ? [`${choice.fundsDelta > 0 ? '+' : ''}${formatMoney(choice.fundsDelta)}`] : []),
+                  ...(choice.reputationDelta ? [`${choice.reputationDelta > 0 ? '+' : ''}${choice.reputationDelta} реп.`] : []),
+                  ...(choice.riskHint ? [choice.riskHint] : [])
+                ];
                 return (
                   <button
                     key={'id' in choice ? choice.id : `${activeEvent.id}-${idx}`}
                     onClick={() => handleEventChoice(choice)}
-                    disabled={cannotAfford}
+                    disabled={!availability.available}
+                    title={availability.reason}
                     className="w-full text-left bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-pink-500/50 p-4 rounded-xl transition cursor-pointer flex items-center justify-between group disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-slate-800"
                   >
-                    <span>
+                    <span className="min-w-0">
                       <span className="block text-sm font-medium text-white group-hover:text-pink-400">{choice.text}</span>
-                      {cannotAfford && <span className="mt-1 block text-[10px] text-red-300">Недостаточно средств: нужно {formatMoney(choiceCost)}.</span>}
+                      {summary.length > 0 && <span className="mt-1 block text-[11px] text-slate-400">{summary.join(' • ')}</span>}
+                      {!availability.available && availability.reason && <span className="mt-1 block text-[10px] text-red-300">{availability.reason}</span>}
                     </span>
                     <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-pink-400 shrink-0" aria-hidden="true" />
                   </button>
@@ -6358,6 +6404,11 @@ contracts={gameState.tradeSupplyContracts || []}
           <MezzanineJournalTab onOpenTab={(tab) => { setActiveTab(tab as AppTab); setIsMobileMenuOpen(false); }} />
         )}
 
+        {/* MEZZANINE GTA-6 TAB — локальный игровой сервер GTA-6 */}
+        {activeTab === 'mezzanine_gta6' && (
+          <MezzanineGTA6Tab />
+        )}
+
         {/* WASTELAND TAB — вылазки в заражённые зоны пустоши */}
         {activeTab === 'wasteland' && (
           <WastelandTab gameState={gameState} />
@@ -6370,6 +6421,7 @@ contracts={gameState.tradeSupplyContracts || []}
             activeTab={activeTab}
             onViewChange={handleMezzanineViewChange}
             onCityPlanChange={handleCityPlanChange}
+            onFundsChange={handleFundsChange}
             onOpenTab={tab => { setActiveTab(tab); setMezzanineView(tab); setIsMobileMenuOpen(false); }}
           />
         )}

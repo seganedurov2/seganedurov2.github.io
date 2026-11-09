@@ -19,6 +19,8 @@ import {
   registerCaravanDispatched,
   registerLoanRepaid,
   registerLoanTaken,
+  registerProgressionSale,
+  progressionRevenueMultiplier,
   saveGameRecords,
   saveLeaderboard,
   updateGameRecords,
@@ -193,6 +195,31 @@ describe('metaProgressEngine', () => {
     expect(prestigeRevenueMultiplier(4)).toBe(2);
     expect(prestigeStartingFunds(100000, 0)).toBe(100000);
     expect(prestigeStartingFunds(100000, 2)).toBe(200000);
+  });
+
+  it('counts sold progression items and unlocks their achievements', () => {
+    let meta = createInitialMetaProgress();
+    expect(meta.stats.progressionItemsSold).toBe(0);
+
+    meta = registerProgressionSale(meta);
+    expect(meta.stats.progressionItemsSold).toBe(1);
+    const first = evaluateAchievements(meta, baseSnapshot);
+    expect(first.newlyUnlocked).toContain('first_progression');
+    expect(first.newlyUnlocked).not.toContain('progression_master');
+
+    for (let i = 1; i < 10; i++) meta = registerProgressionSale(meta);
+    expect(meta.stats.progressionItemsSold).toBe(10);
+    const master = evaluateAchievements(meta, baseSnapshot);
+    expect(master.newlyUnlocked).toContain('progression_master');
+  });
+
+  it('grants +10% revenue per five sold progression items', () => {
+    expect(progressionRevenueMultiplier(0)).toBe(1);
+    expect(progressionRevenueMultiplier(4)).toBe(1);
+    expect(progressionRevenueMultiplier(5)).toBeCloseTo(1.1);
+    expect(progressionRevenueMultiplier(9)).toBeCloseTo(1.1);
+    expect(progressionRevenueMultiplier(10)).toBeCloseTo(1.2);
+    expect(progressionRevenueMultiplier(-3)).toBe(1);
   });
 
   it('merges records and keeps the best entries', () => {

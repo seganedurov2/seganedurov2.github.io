@@ -1,3 +1,5 @@
+import type { CampaignActCondition } from './expansionTypes';
+
 export interface EventChoice {
   text: string;
   fundsDelta?: number;
@@ -15,6 +17,13 @@ export interface EventChoice {
    * resolving immediately (Idea 4: auction house). The App shows a bid modal.
    */
   startsAuction?: boolean;
+  /** Weeks before this event/choice path should be repeated (engine-level anti-repeat). */
+  cooldownWeeks?: number;
+  /** Optional risk/consequence hint shown in UI. */
+  riskHint?: string;
+  /** Declarative guards used by UI/selection helpers. */
+  requiresFunds?: number;
+  requiresReputation?: number;
 }
 
 export interface GameEvent {
@@ -25,8 +34,24 @@ export interface GameEvent {
   choices: EventChoice[];
   /** Condition that must be met for this event to be eligible for selection. */
   condition?: (state: any) => boolean;
+  /** Structured conditions for deterministic/save-safe selection. */
+  conditions?: {
+    minWeek?: number;
+    maxWeek?: number;
+    minFunds?: number;
+    maxFunds?: number;
+    minReputation?: number;
+    maxReputation?: number;
+    acts?: CampaignActCondition[];
+    buildingId?: string;
+    minBuildingLevel?: number;
+    employeeSpecialty?: string;
+    minEmployees?: number;
+  }[];
   /** Weight for selection; higher values increase the probability. */
   weight?: number;
+  /** Weeks before this event may appear again after being shown. */
+  cooldownWeeks?: number;
 }
 
 export interface CaravanEvent {
@@ -233,18 +258,78 @@ export const RANDOM_EVENTS: GameEvent[] = [
   }
 ];
 
-export function getRandomEvent(state: any): GameEvent {
-  const eligibleEvents = RANDOM_EVENTS.filter(event => !event.condition || event.condition(state));
-  const pool = eligibleEvents.length > 0 ? eligibleEvents : RANDOM_EVENTS;
-  
-  const totalWeight = pool.reduce((sum, event) => sum + (event.weight ?? 1), 0);
-  let random = Math.random() * totalWeight;
-  
-  for (const event of pool) {
-    random -= (event.weight ?? 1);
-    if (random <= 0) return event;
+export interface LegacyEventContext {
+  week: number;
+  funds: number;
+  reputation: number;
+  actId?: CampaignActCondition;
+  employees?: { specialty?: string; status?: string }[];
+  auxiliaryBuildings?: { id: string; level: number }[];
+  recentEventIds?: string[];
+  eventCooldowns?: Record<string, number>;
+}
+
+function legacyConditionMatches(event: GameEvent, context: LegacyEventContext): boolean {
+  if (event.condition && !event.condition(context as any)) return false;
+  const conditions = event.conditions;
+  if (!conditions?.length) return true;
+  return conditions.some(condition => {
+    if (condition.minWeek !== undefined && context.week < condition.minWeek) return false;
+    if (condition.maxWeek !== undefined && context.week > condition.maxWeek) return false;
+    if (condition.minFunds !== undefined && context.funds < condition.minFunds) return false;
+    if (condition.maxFunds !== undefined && context.funds > condition.maxFunds) return false;
+    if (condition.minReputation !== undefined && context.reputation < condition.minReputation) return false;
+    if (condition.maxReputation !== undefined && context.reputation > condition.maxReputation) return false;
+    if (condition.acts?.length && (!context.actId || !condition.acts.includes(context.actId))) return false;
+    if (condition.employeeSpecialty) {
+      const employees = context.employees ?? [];
+      if (!employees.some(employee => employee.specialty === condition.employeeSpecialty && (employee.status ?? 'active') === 'active')) return false;
+    }
+    if (condition.buildingId) {
+      const building = (context.auxiliaryBuildings ?? []).find(item => item.id === condition.buildingId);
+      if (!building || building.level < (condition.minBuildingLevel ?? 1)) return false;
+    }
+    if (condition.minEmployees !== undefined && (context.employees?.length ?? 0) < condition.minEmployees) return false;
+    return true;
+  });
+}
+
+function isLegacyEventOnCooldown(event: GameEvent, context: LegacyEventContext): boolean {
+  const availableAt = context.eventCooldowns?.[event.id];
+  if (availableAt !== undefined && availableAt > context.week) return true;
+  const cooldown = event.cooldownWeeks ?? 0;
+  if (cooldown <= 0 || !context.recentEventIds?.length) return false;
+  const recent = context.recentEventIds.slice(-cooldown);
+  return recent.includes(event.id);
+}
+
+function pickWeightedLegacyEvent(events: GameEvent[], random: () => number): GameEvent {
+  const totalWeight = events.reduce((sum, event) => sum + Math.max(0, event.weight ?? 1), 0);
+  if (totalWeight <= 0) return events[Math.floor(random() * events.length)] ?? events[0];
+  let roll = random() * totalWeight;
+  for (const event of events) {
+    roll -= Math.max(0, event.weight ?? 1);
+    if (roll <= 0) return event;
   }
-  return pool[0];
+  return events[events.length - 1] ?? events[0];
+}
+
+export function getRandomEvent(state: any, random: () => number = Math.random): GameEvent {
+  const context: LegacyEventContext = {
+    week: Number(state?.week) || 1,
+    funds: Number(state?.funds) || 0,
+    reputation: Number(state?.reputation) || 0,
+    actId: state?.campaignScript?.actId,
+    employees: Array.isArray(state?.employees) ? state.employees : [],
+    auxiliaryBuildings: Array.isArray(state?.auxiliaryBuildings) ? state.auxiliaryBuildings : [],
+    recentEventIds: Array.isArray(state?.eventHistory) ? state.eventHistory.map((entry: any) => entry?.id).filter((id: unknown): id is string => typeof id === 'string') : Array.isArray(state?.recentEventIds) ? state.recentEventIds : [],
+    eventCooldowns: state?.eventCooldowns && typeof state.eventCooldowns === 'object' ? state.eventCooldowns : undefined
+  };
+  const eligibleEvents = RANDOM_EVENTS.filter(event => legacyConditionMatches(event, context));
+  const pool = eligibleEvents.length > 0 ? eligibleEvents : RANDOM_EVENTS;
+  const offCooldown = pool.filter(event => !isLegacyEventOnCooldown(event, context));
+  const finalPool = offCooldown.length > 0 ? offCooldown : pool;
+  return pickWeightedLegacyEvent(finalPool, random);
 }
 
 /**
@@ -278,7 +363,12 @@ export const AUCTION_EVENT: GameEvent = {
  * Expansion event variants are selected by expansionEventsEngine.ts to keep this
  * existing legacy event API and auction handoff intact.
  */
-export function getRandomEventWithAuction(week: number): GameEvent {
+export function getRandomEventWithAuction(
+  weekOrState: number | any,
+  random: () => number = Math.random
+): GameEvent {
+  const week = typeof weekOrState === 'number' ? weekOrState : Number(weekOrState?.week) || 1;
   if (week % 4 === 0) return AUCTION_EVENT;
-  return getRandomEvent({} as any);
+  const state = typeof weekOrState === 'number' ? { week } : weekOrState;
+  return getRandomEvent(state, random);
 }

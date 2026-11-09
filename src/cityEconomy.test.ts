@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advanceCityEconomy, CITY_ECONOMY_BALANCE, GROWTH_DEPOSIT, KIND_LABELS } from './cityEconomyEngine';
+import { advanceCityEconomy, CITY_ECONOMY_BALANCE, compareCityReports, type CityEconomyReport, GROWTH_DEPOSIT, KIND_LABELS } from './cityEconomyEngine';
 import { cityStats, generateCity, placeBuilding, type BuildingKind } from './cityBuilder';
 import { serializeCityPlan } from './cityPlanState';
 
@@ -37,13 +37,14 @@ const cityWith = (kinds: BuildingKind[], seed = 42) => {
   return { city, plan };
 };
 
-const neverRandom = () => 0;
+const neverRandom = () => 0.5;
+const alwaysZero = () => 0;
 
 describe('city economy engine', () => {
   it('reports an empty town without money lines', () => {
     const result = advanceCityEconomy({ plan: null, week: 3, now: NOW });
-    expect(result.report.income).toEqual({ employmentTax: 0, parks: 0 });
-    expect(result.report.expenses).toEqual({ upkeep: 0, unemployment: 0 });
+    expect(result.report.income).toEqual({ employmentTax: 0, parks: 0, fees: 0 });
+    expect(result.report.expenses).toEqual({ upkeep: 0, unemployment: 0, construction: 0 });
     expect(result.report.surplus).toBe(0);
     expect(result.plan).toBeNull();
   });
@@ -72,9 +73,10 @@ describe('city economy engine', () => {
     expect(report.filledJobs).toBe(8);
     expect(report.unemployed).toBe(0);
     expect(report.income.employmentTax).toBe(8 * (CITY_ECONOMY_BALANCE.taxPerResident + CITY_ECONOMY_BALANCE.taxPerJob));
-    expect(report.expenses.upkeep).toBe(2 * CITY_ECONOMY_BALANCE.upkeepPerBuilding);
+    expect(report.expenses.upkeep).toBe(CITY_ECONOMY_BALANCE.upkeepPerKind.house! + CITY_ECONOMY_BALANCE.upkeepPerKind.factory!);
     expect(report.expenses.unemployment).toBe(0);
-    expect(report.surplus).toBe(report.income.employmentTax + report.income.parks - report.expenses.upkeep);
+    expect(report.income.fees).toBe(CITY_ECONOMY_BALANCE.feePerKind.house! + CITY_ECONOMY_BALANCE.feePerKind.factory!);
+    expect(report.surplus).toBe(report.income.employmentTax + report.income.parks + report.income.fees - report.expenses.upkeep);
     expect(report.surplus).toBeGreaterThan(0);
   });
 
@@ -139,7 +141,7 @@ describe('city economy engine', () => {
       plan,
       week: 10,
       now: NOW,
-      random: neverRandom,
+      random: alwaysZero,
       balance: { taxPerResident: 20, taxPerJob: 20, growthBudgetShare: 1 },
     });
 
@@ -177,5 +179,61 @@ describe('city economy engine', () => {
     expect(result.report.residents).toBe(stats.population);
     expect(result.report.jobs).toBe(stats.jobs);
     expect(result.report.built).toBe(stats.built);
+  });
+
+  describe('compareCityReports', () => {
+    const base: CityEconomyReport = {
+      week: 5,
+      residents: 10,
+      jobs: 20,
+      filledJobs: 10,
+      occupancy: 0.5,
+      built: 2,
+      parks: 1,
+      unemployed: 0,
+      income: { employmentTax: 80, parks: 95, fees: 12 },
+      expenses: { upkeep: 30, unemployment: 0, construction: 5 },
+      surplus: 152,
+      started: [],
+      constructionSpend: 0,
+      log: [],
+      events: [],
+      previousWeek: null,
+    };
+
+    const makeReport = (overrides: Partial<CityEconomyReport>): CityEconomyReport =>
+      ({ ...base, ...overrides });
+
+    it('computes deltas and trend when surplus grew', () => {
+      const current = makeReport({ week: 6, surplus: 200, income: { employmentTax: 100, parks: 95, fees: 12 } });
+      const previous = makeReport({ week: 5, surplus: 152 });
+      const d = compareCityReports(current, previous);
+      expect(d.incomeDelta).toBe(20);
+      expect(d.expensesDelta).toBe(0);
+      expect(d.surplusDelta).toBe(48);
+      expect(d.residentsDelta).toBe(0);
+      expect(d.jobsDelta).toBe(0);
+      expect(d.builtDelta).toBe(0);
+      expect(d.trend).toBe('up');
+    });
+
+    it('computes deltas and trend when surplus fell', () => {
+      const current = makeReport({ week: 6, surplus: 100, income: { employmentTax: 50, parks: 95, fees: 12 } });
+      const previous = makeReport({ week: 5, surplus: 152 });
+      const d = compareCityReports(current, previous);
+      expect(d.incomeDelta).toBe(-30);
+      expect(d.expensesDelta).toBe(0);
+      expect(d.surplusDelta).toBe(-52);
+      expect(d.trend).toBe('down');
+    });
+
+    it('treats missing previous as neutral flat trend', () => {
+      const current = makeReport({ week: 6 });
+      const d = compareCityReports(current, null);
+      expect(d.incomeDelta).toBe(0);
+      expect(d.expensesDelta).toBe(0);
+      expect(d.surplusDelta).toBe(0);
+      expect(d.trend).toBe('flat');
+    });
   });
 });

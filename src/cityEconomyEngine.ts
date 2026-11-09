@@ -21,6 +21,36 @@ import {
 } from './cityBuilder';
 import { restoreCityPlan, serializeCityPlan, type CityPlanSave } from './cityPlanState';
 
+/** 0.7.0: weekly result of one started construction. */
+export interface CityConstruction {
+  kind: BuildingKind;
+  lot: number;
+  /** Week construction was started. */
+  startedWeek: number;
+  /** Weeks remaining until finished (0 = already finished). */
+  weeksRemaining: number;
+  /** Deposit paid to start. */
+  deposit: number;
+}
+
+/** 0.7.0: result of one week's construction progress. */
+export interface CityConstructionResult {
+  /** Constructions that finished this week. */
+  finished: CityConstruction[];
+  /** Total weekly upkeep charged for unfinished constructions. */
+  constructionUpkeep: number;
+  /** Log lines about construction this week. */
+  log: string[];
+}
+
+/** 0.7.0: one light city event that fired this week. */
+export interface CityEvent {
+  id: string;
+  label: string;
+  reason: string;
+  fundsDelta: number;
+}
+
 export interface CityEconomyBalance {
   /** Weekly municipal tax per employed resident. */
   taxPerResident: number;
@@ -38,6 +68,14 @@ export interface CityEconomyBalance {
   growthBudgetShare: number;
   /** Maximum number of new constructions started in one week. */
   maxGrowthStarts: number;
+  /** 0.7.0: weekly upkeep per finished building by kind. */
+  upkeepPerKind: Partial<Record<BuildingKind, number>>;
+  /** 0.7.0: weekly fee collected per finished building by kind. */
+  feePerKind: Partial<Record<BuildingKind, number>>;
+  /** 0.7.0: deposit required to start construction of each kind. */
+  constructionCostPerKind: Partial<Record<BuildingKind, number>>;
+  /** 0.7.0: chance (0..1) of a light city event each week. */
+  eventChance: number;
 }
 
 export const CITY_ECONOMY_BALANCE: CityEconomyBalance = {
@@ -49,6 +87,29 @@ export const CITY_ECONOMY_BALANCE: CityEconomyBalance = {
   growthMinOccupancy: 0.6,
   growthBudgetShare: 0.5,
   maxGrowthStarts: 2,
+  // 0.7.0: kind-specific upkeep and fees.
+  upkeepPerKind: {
+    house: 10,
+    shop: 20,
+    office: 30,
+    factory: 45,
+    park: 5,
+  },
+  feePerKind: {
+    house: 4,
+    shop: 8,
+    office: 15,
+    factory: 25,
+    park: 0,
+  },
+  constructionCostPerKind: {
+    house: 120,
+    shop: 180,
+    office: 260,
+    factory: 400,
+    park: 90,
+  },
+  eventChance: 0.15,
 };
 
 /** Money the town pays to break ground on each kind, funded from the surplus. */
@@ -62,6 +123,40 @@ export const GROWTH_DEPOSIT: Record<BuildingKind, number> = {
 
 /** Kinds the town builds on its own; the factory is left to the player. */
 const GROWTH_PREFERENCE: BuildingKind[] = ['house', 'house', 'shop', 'park', 'office'];
+
+/** 0.7.0: light city events that can fire each week. */
+const CITY_EVENTS: CityEvent[] = [
+  {
+    id: 'city_festival',
+    label: 'Городской праздник',
+    reason: 'Приток посетителей и торговцы Plaza',
+    fundsDelta: 150,
+  },
+  {
+    id: 'city_storm',
+    label: 'Шторм',
+    reason: 'Повреждение кровли и остановка работ',
+    fundsDelta: -80,
+  },
+  {
+    id: 'city_riot',
+    label: 'Бунт на рынке',
+    reason: 'Ущерб торговым павильонам и пропуск выручки',
+    fundsDelta: -200,
+  },
+  {
+    id: 'city_investor',
+    label: 'Инвестор в городе',
+    reason: 'Частный капитал вливается в муниципальный бюджет',
+    fundsDelta: 300,
+  },
+  {
+    id: 'city_epidemic',
+    label: 'Эпидемия',
+    reason: 'Карантин, снижение выручки и расходы на лечение',
+    fundsDelta: -120,
+  },
+];
 
 export interface CityEconomyReport {
   week: number;
@@ -79,10 +174,14 @@ export interface CityEconomyReport {
     /** Tax paid on employment: residents holding jobs and the jobs they fill. */
     employmentTax: number;
     parks: number;
+    /** 0.7.0: per-building fees collected from finished buildings. */
+    fees: number;
   };
   expenses: {
     upkeep: number;
     unemployment: number;
+    /** 0.7.0: weekly upkeep charged for unfinished constructions. */
+    construction: number;
   };
   /** income - expenses (before construction costs). */
   surplus: number;
@@ -90,8 +189,12 @@ export interface CityEconomyReport {
   started: BuildingKind[];
   /** Money spent on the started constructions. */
   constructionSpend: number;
-  /** Human-readable lines for the campaign log. */
+  /** 0.7.0: human-readable lines for the campaign log. */
   log: string[];
+  /** 0.7.0: city events that fired this week. */
+  events: CityEvent[];
+  /** 0.7.0: previous week's report for comparison, if available. */
+  previousWeek: CityEconomyReport | null;
 }
 
 export interface CityEconomyInput {
@@ -100,12 +203,16 @@ export interface CityEconomyInput {
   now?: number;
   random?: () => number;
   balance?: Partial<CityEconomyBalance>;
+  /** 0.7.0: previous week's report for comparison. */
+  previousReport?: CityEconomyReport | null;
 }
 
 export interface CityEconomyResult {
   report: CityEconomyReport;
   /** Plan to persist; null when there is no city to keep. */
   plan: CityPlanSave | null;
+  /** 0.7.0: net change to campaign treasury this week (surplus minus construction/upkeep). */
+  treasuryDelta: number;
 }
 
 /** Display names for buildings the weekly report may have started. */
@@ -129,12 +236,14 @@ function emptyReport(week: number): CityEconomyReport {
     built: 0,
     parks: 0,
     unemployed: 0,
-    income: { employmentTax: 0, parks: 0 },
-    expenses: { upkeep: 0, unemployment: 0 },
+    income: { employmentTax: 0, parks: 0, fees: 0 },
+    expenses: { upkeep: 0, unemployment: 0, construction: 0 },
     surplus: 0,
     started: [],
     constructionSpend: 0,
     log: [],
+    events: [],
+    previousWeek: null,
   };
 }
 
@@ -165,6 +274,48 @@ function firstEmptyLot(city: CityState): { x: number; y: number } | null {
   return null;
 }
 
+/** 0.7.0: pick one light city event by chance. */
+function rollCityEvent(random: () => number): CityEvent | null {
+  const roll = random();
+  if (roll > CITY_ECONOMY_BALANCE.eventChance) return null;
+  const idx = Math.floor(roll * CITY_EVENTS.length);
+  return CITY_EVENTS[idx] ?? null;
+}
+
+/**
+ * 0.7.0: applies one week of construction progress to unfinished buildings,
+ * charging weekly upkeep for each unfinished one.
+ */
+function advanceConstructions(city: CityState): CityConstructionResult {
+  const finished: CityConstruction[] = [];
+  let constructionUpkeep = 0;
+  const log: string[] = [];
+
+  for (let y = 0; y < city.size; y++) {
+    for (let x = 0; x < city.size; x++) {
+      const cell = city.cells[y][x];
+      if (cell.type !== 'lot' || !cell.building) continue;
+      const building = cell.building;
+      if (building.progress >= 1) continue;
+
+      constructionUpkeep += Math.ceil(CITY_ECONOMY_BALANCE.upkeepPerBuilding * 0.25);
+      building.progress = Math.min(1, building.progress + 1 / 7);
+      if (building.progress >= 1) {
+        finished.push({
+          kind: building.kind,
+          lot: cell.lot,
+          startedWeek: 0,
+          weeksRemaining: 0,
+          deposit: 0,
+        });
+        log.push(`Строительство завершено: ${KIND_LABELS[building.kind]} на участке ${cell.lot}.`);
+      }
+    }
+  }
+
+  return { finished, constructionUpkeep, log };
+}
+
 /**
  * Starts up to `maxStarts` constructions, spending at most `budget`. Only the
  * starting deposit is charged here (construction itself is free in the
@@ -183,7 +334,7 @@ function grow(
     const lot = firstEmptyLot(city);
     if (!lot) break;
     const kind = GROWTH_PREFERENCE[Math.floor(random() * GROWTH_PREFERENCE.length)] ?? GROWTH_PREFERENCE[0];
-    const deposit = GROWTH_DEPOSIT[kind];
+    const deposit = balanceConstructionCost(kind);
     if (spend + deposit > budget) continue;
     const result = placeBuilding(city, lot.x, lot.y, kind);
     if (!result.ok) continue;
@@ -191,6 +342,21 @@ function grow(
     kinds.push(kind);
   }
   return { kinds, spend };
+}
+
+/** 0.7.0: construction deposit for a kind, falling back to GROWTH_DEPOSIT. */
+function balanceConstructionCost(kind: BuildingKind): number {
+  return CITY_ECONOMY_BALANCE.constructionCostPerKind?.[kind] ?? GROWTH_DEPOSIT[kind];
+}
+
+/** 0.7.0: weekly upkeep for a finished building by kind. */
+function balanceUpkeep(kind: BuildingKind): number {
+  return CITY_ECONOMY_BALANCE.upkeepPerKind?.[kind] ?? CITY_ECONOMY_BALANCE.upkeepPerBuilding;
+}
+
+/** 0.7.0: weekly fee collected for a finished building by kind. */
+function balanceFee(kind: BuildingKind): number {
+  return CITY_ECONOMY_BALANCE.feePerKind?.[kind] ?? 0;
 }
 
 /**
@@ -208,7 +374,9 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const random = input.random ?? Math.random;
 
   if (!input.plan || !Array.isArray(input.plan.buildings) || input.plan.buildings.length === 0) {
-    return { report: emptyReport(week), plan: input.plan ?? null };
+    const report = emptyReport(week);
+    report.previousWeek = input.previousReport ?? null;
+    return { report, plan: input.plan ?? null, treasuryDelta: 0 };
   }
 
   const restored = restoreCityPlan(input.plan, input.plan.seed, now);
@@ -218,10 +386,15 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   report.residents = stats.population;
   report.jobs = stats.jobs;
   report.built = stats.built;
+  report.previousWeek = input.previousReport ?? null;
 
   if (stats.built === 0) {
     report.log.push('Город: стройка идёт, но ни одно здание ещё не сдано — муниципальных доходов нет.');
-    return { report, plan: restored.save ?? input.plan };
+    const construction = advanceConstructions(city);
+    report.expenses.construction = construction.constructionUpkeep;
+    report.log.push(...construction.log);
+    const treasuryDelta = -report.expenses.construction;
+    return { report, plan: restored.save ?? input.plan, treasuryDelta };
   }
 
   const counts = countFinished(city);
@@ -239,32 +412,60 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const conditionFactor = 0.6 + 0.4 * clamp01(stats.condition);
   const employmentTax = Math.round(filledJobs * (balance.taxPerResident + balance.taxPerJob) * conditionFactor);
   const parkIncome = Math.round(counts.park * balance.parkSubsidy);
-  const upkeep = Math.round(stats.built * balance.upkeepPerBuilding);
+  const upkeep = Object.entries(counts).reduce((sum, [kind, count]) => {
+    return sum + count * balanceUpkeep(kind as BuildingKind);
+  }, 0);
+  const fees = Object.entries(counts).reduce((sum, [kind, count]) => {
+    return sum + count * balanceFee(kind as BuildingKind);
+  }, 0);
   const unemployment = Math.round(report.unemployed * balance.unemploymentCostPerResident);
 
   report.income.employmentTax = employmentTax;
   report.income.parks = parkIncome;
+  report.income.fees = fees;
   report.expenses.upkeep = upkeep;
   report.expenses.unemployment = unemployment;
-  report.surplus = employmentTax + parkIncome - upkeep - unemployment;
+
+  // 0.7.0: roll a light city event.
+  const event = rollCityEvent(random);
+  if (event) {
+    report.events.push(event);
+    report.log.push(
+      `Событие в городе: ${event.label} — ${event.reason} (${event.fundsDelta > 0 ? '+' : ''}${event.fundsDelta} AX).`
+    );
+  }
+
+  const baseSurplus = employmentTax + parkIncome + fees - upkeep - unemployment + (event?.fundsDelta ?? 0);
+  report.surplus = baseSurplus;
 
   report.log.push(
     `Город: ${stats.built} зданий, ${stats.population} жителей, ${filledJobs}/${stats.jobs} рабочих мест `
     + `(${Math.round(occupancy * 100)}%).`
   );
-  if (employmentTax + parkIncome > 0) {
-    report.log.push(`Город принёс ${employmentTax + parkIncome} AX муниципального дохода.`);
+  if (employmentTax + parkIncome + fees > 0) {
+    report.log.push(`Город принёс ${employmentTax + parkIncome + fees} AX муниципального дохода.`);
   }
   if (upkeep + unemployment > 0) {
     report.log.push(`Город израсходовал ${upkeep + unemployment} AX: обслуживание и пособия безработным.`);
   }
 
+  // 0.7.0: automatic growth from surplus, plus construction upkeep.
   let nextPlan = restored.save;
-  if (report.surplus > 0 && occupancy >= balance.growthMinOccupancy) {
-    const budget = Math.floor(report.surplus * balance.growthBudgetShare);
+  let constructionSpend = 0;
+  let constructionUpkeep = 0;
+
+  const construction = advanceConstructions(city);
+  constructionUpkeep = construction.constructionUpkeep;
+  report.expenses.construction = constructionUpkeep;
+  report.log.push(...construction.log);
+
+  const netSurplus = baseSurplus - constructionUpkeep;
+
+  if (netSurplus > 0 && occupancy >= balance.growthMinOccupancy) {
+    const budget = Math.floor(netSurplus * balance.growthBudgetShare);
     const started = grow(city, budget, balance.maxGrowthStarts, random);
     report.started = started.kinds;
-    report.constructionSpend = started.spend;
+    constructionSpend = started.spend;
     if (started.kinds.length > 0) {
       report.log.push(
         `Город заложил стройку: ${started.kinds.map(kind => KIND_LABELS[kind]).join(', ')} `
@@ -275,11 +476,43 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
         wasOpenAtSave: input.plan.wasOpenAtSave,
       });
     }
-  } else if (report.surplus <= 0) {
+  } else if (netSurplus <= 0) {
     report.log.push('Город не может начать новую стройку: неделя ушла в минус.');
   } else {
     report.log.push('Город замер: слишком мало жителей заняты на местных работах.');
   }
 
-  return { report, plan: nextPlan };
+  report.constructionSpend = constructionSpend;
+  const treasuryDelta = netSurplus - constructionSpend;
+
+  return { report, plan: nextPlan, treasuryDelta };
+}
+
+/** 0.7.0: compares two reports and returns the delta for each line item. */
+export function compareCityReports(
+  current: CityEconomyReport,
+  previous: CityEconomyReport | null,
+): {
+  incomeDelta: number;
+  expensesDelta: number;
+  surplusDelta: number;
+  residentsDelta: number;
+  jobsDelta: number;
+  builtDelta: number;
+  trend: 'up' | 'down' | 'flat';
+} {
+  if (!previous) {
+    return { incomeDelta: 0, expensesDelta: 0, surplusDelta: 0, residentsDelta: 0, jobsDelta: 0, builtDelta: 0, trend: 'flat' };
+  }
+  const prev = previous;
+  const incomeDelta = (current.income.employmentTax + current.income.parks + current.income.fees)
+    - (prev.income.employmentTax + prev.income.parks + prev.income.fees);
+  const expensesDelta = (current.expenses.upkeep + current.expenses.unemployment + current.expenses.construction)
+    - (prev.expenses.upkeep + prev.expenses.unemployment + prev.expenses.construction);
+  const surplusDelta = current.surplus - prev.surplus;
+  const residentsDelta = current.residents - prev.residents;
+  const jobsDelta = current.jobs - prev.jobs;
+  const builtDelta = current.built - prev.built;
+  const trend = surplusDelta > 0 ? 'up' : surplusDelta < 0 ? 'down' : 'flat';
+  return { incomeDelta, expensesDelta, surplusDelta, residentsDelta, jobsDelta, builtDelta, trend };
 }

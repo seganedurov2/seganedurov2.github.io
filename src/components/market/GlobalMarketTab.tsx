@@ -28,6 +28,15 @@ import { currentPortraitRenderMode } from '../../portrait3dSupport';
 import { usePortrait3dEnabled } from '../../portrait3dFlag';
 import { demandTier, marketValueOf, slaveQualityOf } from '../../slaveContractsEngine';
 import {
+  MARKET_TIER_LABELS,
+  calculateArbitrage,
+  marketDemandOf,
+  marketStandingOf,
+  marketTier,
+  type ArbitrageQuote,
+  type MarketTier
+} from '../../marketEconomyEngine';
+import {
   MARKET_IMPROVEMENT_IDS,
   MARKET_IMPROVEMENT_TRACKS,
   MARKET_FINANCIER,
@@ -52,6 +61,10 @@ interface GlobalMarketTabProps {
   marketRequest?: MarketImprovementRequest | null;
   onAcceptMarketRequest?: () => void;
   onDeclineMarketRequest?: () => void;
+  /** Региональный спрос (0.6.5) — множитель цены кандидата. */
+  marketDemand?: Record<string, number>;
+  /** Региональное влияние (0.6.5) — скидка на покупку. */
+  regionalStanding?: Record<string, number>;
 }
 
 const portraitFallback = 'https://images.unsplash.com/photo-1666577624653-b6f0043fed0e?crop=entropy&cs=srgb&fm=jpg&ixlib=rb-4.1.0&q=85&fit=crop&w=1100';
@@ -62,6 +75,12 @@ const HEALTH_LABELS: Record<Character['healthLevel'], string> = {
   Fair: 'среднее',
   Poor: 'плохое',
   Critical: 'критическое'
+};
+
+const TIER_TONES: Record<MarketTier, string> = {
+  source: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  neutral: 'border-slate-600/50 bg-slate-800/60 text-slate-300',
+  premium: 'border-amber-500/30 bg-amber-500/10 text-amber-300'
 };
 
 const EXHAUSTION_LABELS: Record<Character['exhaustionLevel'], string> = {
@@ -350,7 +369,9 @@ export function GlobalMarketTab({
   marketImprovements = {},
   marketRequest = null,
   onAcceptMarketRequest,
-  onDeclineMarketRequest
+  onDeclineMarketRequest,
+  marketDemand = {},
+  regionalStanding = {}
 }: GlobalMarketTabProps) {
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(candidates[0]?.id ?? null);
   const [failedPortraitCharacterId, setFailedPortraitCharacterId] = useState<string | null>(null);
@@ -383,6 +404,26 @@ export function GlobalMarketTab({
   const selectedQuality = selectedCandidate ? slaveQualityOf(selectedCandidate) : 'low';
   const selectedDeal = selectedCandidate ? assessDeal(selectedCandidate) : null;
   const selectedDemand = selectedCandidate ? demandTier(selectedCandidate.region) : 'low';
+  // 0.6.5: спрос и влияние региона выбранного кандидата и арбитраж в регион сбыта.
+  const selectedMarketDemand = selectedCandidate ? marketDemandOf(marketDemand, selectedCandidate.region) : 1;
+  const selectedStanding = selectedCandidate ? marketStandingOf(regionalStanding, selectedCandidate.region) : 50;
+  const selectedTier = marketTier(selectedMarketDemand);
+  const selectedArbitrage: ArbitrageQuote | null = useMemo(() => {
+    if (!selectedCandidate) return null;
+    // Лучший регион сбыта среди тех, что есть в пуле кандидатов.
+    const targetRegionId = Object.keys(marketDemand)
+      .filter(regionId => regionId !== selectedCandidate.region)
+      .sort((a, b) => marketDemandOf(marketDemand, b) - marketDemandOf(marketDemand, a))[0];
+    if (!targetRegionId) return null;
+    const quote = calculateArbitrage({
+      basePrice: selectedCandidate.price,
+      sourceRegionId: selectedCandidate.region,
+      targetRegionId,
+      demand: marketDemand,
+      standing: regionalStanding
+    });
+    return quote.profitable ? quote : null;
+  }, [selectedCandidate, marketDemand, regionalStanding]);
 
   const regionOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -662,6 +703,29 @@ export function GlobalMarketTab({
                     <dt className="text-slate-500">Цена предложения</dt>
                     <dd className="font-mono text-slate-200">{formatMoney(selectedCandidate.price)}</dd>
                   </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-slate-500">Спрос региона</dt>
+                    <dd className="flex items-center gap-2">
+                      <span className={`inline-flex items-center rounded border px-1.5 py-px text-[10px] font-semibold ${TIER_TONES[selectedTier]}`}>
+                        {MARKET_TIER_LABELS[selectedTier]}
+                      </span>
+                      <span className="font-mono text-slate-200">×{selectedMarketDemand.toFixed(2)}</span>
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-slate-500">Влияние в регионе</dt>
+                    <dd className="font-mono text-slate-200">
+                      {Math.round(selectedStanding)} · скидка {Math.round((selectedStanding / 100) * 20)}%
+                    </dd>
+                  </div>
+                  {selectedArbitrage && (
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-slate-500">Арбитраж при перепродаже</dt>
+                      <dd className="font-mono font-semibold text-emerald-300">
+                        +{formatMoney(selectedArbitrage.margin)} ({Math.round(selectedArbitrage.marginPct * 100)}%)
+                      </dd>
+                    </div>
+                  )}
                   {selectedDeal && (
                     <>
                       <div className="flex justify-between gap-3">

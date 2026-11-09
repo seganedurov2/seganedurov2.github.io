@@ -167,6 +167,9 @@ describe('saveState meta-progress migration', () => {
 
     expect(migrated.version).toBe(5);
     expect(migrated.cityPlan).toBeNull();
+    expect(migrated.eventHistory).toEqual([]);
+    expect(migrated.eventCooldowns).toEqual({});
+    expect(migrated.deferredEventEffects).toEqual([]);
     expect(migrated.funds).toBe(campaign.funds);
     expect(migrated.roster).toHaveLength(campaign.roster.length);
   });
@@ -221,12 +224,14 @@ describe('saveState meta-progress migration', () => {
       built: 3,
       parks: 0,
       unemployed: 0,
-      income: { employmentTax: 96, parks: 0 },
-      expenses: { upkeep: 54, unemployment: 0 },
+      income: { employmentTax: 96, parks: 0, fees: 0 },
+      expenses: { upkeep: 54, unemployment: 0, construction: 0 },
       surplus: 42,
       started: ['house' as const],
       constructionSpend: 120,
       log: ['Город принёс 96 AX муниципального дохода.'],
+      events: [],
+      previousWeek: null,
     };
     const migrated = migrateCampaignState({
       ...JSON.parse(JSON.stringify(campaign)),
@@ -247,8 +252,8 @@ describe('saveState meta-progress migration', () => {
     expect(report).not.toBeNull();
     expect(report?.occupancy).toBe(1);
     expect(report?.surplus).toBe(0);
-    expect(report?.income).toEqual({ employmentTax: 0, parks: 0 });
-    expect(report?.expenses).toEqual({ upkeep: 0, unemployment: 0 });
+    expect(report?.income).toEqual({ employmentTax: 0, parks: 0, fees: 0 });
+    expect(report?.expenses).toEqual({ upkeep: 0, unemployment: 0, construction: 0 });
     expect(migrated.funds).toBe(campaign.funds);
   });
 

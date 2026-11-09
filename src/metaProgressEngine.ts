@@ -37,7 +37,9 @@ export type AchievementId =
   | 'campaign_victory'
   | 'warehouse_1'
   | 'warehouse_3'
-  | 'warehouse_5';
+  | 'warehouse_5'
+  | 'first_progression'
+  | 'progression_master';
 
 export interface AchievementDef {
   id: AchievementId;
@@ -73,7 +75,9 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'campaign_victory', title: 'Победа кампании', description: 'Выполнить цель кампании' },
   { id: 'warehouse_1', title: 'Первый склад', description: 'Улучшить складской мезонин до уровня 1' },
   { id: 'warehouse_3', title: 'Автоматизированный склад', description: 'Достичь уровня 3 на складском мезонине' },
-  { id: 'warehouse_5', title: 'Полный AS/RS', description: 'Достичь 5-го уровня складского мезонина с полной автоматизацией' }
+  { id: 'warehouse_5', title: 'Полный AS/RS', description: 'Достичь 5-го уровня складского мезонина с полной автоматизацией' },
+  { id: 'first_progression', title: 'Первый H-предмет', description: 'Продать первый специальный предмет прогрессии с аукциона' },
+  { id: 'progression_master', title: 'Мастер прогрессии', description: 'Продать 10 специальных предметов прогрессии' }
 ];
 
 export const ACHIEVEMENT_BY_ID: Record<AchievementId, AchievementDef> = ACHIEVEMENTS.reduce(
@@ -101,6 +105,8 @@ export interface LifetimeStats {
   loansRepaid: number;
   births: number;
   warehouseLevel: number;
+  /** Сколько специальных предметов прогрессии продано на аукционе (H-уровень). */
+  progressionItemsSold: number;
 }
 
 export interface PrestigeState {
@@ -108,6 +114,8 @@ export interface PrestigeState {
   level: number;
   /** Total victories across all runs, including the current one. */
   victories: number;
+  /** Сколько специальных предметов прогрессии уже продано (H-уровень). */
+  progressionPoints: number;
 }
 
 export type CampaignGoalStatus = 'ongoing' | 'victory' | 'defeat';
@@ -129,6 +137,8 @@ export const CAMPAIGN_GOAL_REPUTATION = 50;
 
 export const PRESTIGE_REVENUE_BONUS_PER_LEVEL = 0.25;
 export const PRESTIGE_STARTING_FUNDS_BONUS_PER_LEVEL = 0.5;
+/** Каждые 5 проданных предметов прогрессии дают +10% к доходу (H-прогрессия). */
+export const PROGRESSION_REVENUE_BONUS_PER_5 = 0.10;
 
 export function createEmptyLifetimeStats(): LifetimeStats {
   return {
@@ -150,7 +160,8 @@ export function createEmptyLifetimeStats(): LifetimeStats {
     loansTaken: 0,
     loansRepaid: 0,
     births: 0,
-    warehouseLevel: 0
+    warehouseLevel: 0,
+    progressionItemsSold: 0
   };
 }
 
@@ -158,7 +169,7 @@ export function createInitialMetaProgress(): MetaProgressState {
   return {
     achievements: {} as Record<AchievementId, number>,
     stats: createEmptyLifetimeStats(),
-    prestige: { level: 0, victories: 0 },
+    prestige: { level: 0, victories: 0, progressionPoints: 0 },
     goalStatus: 'ongoing',
     endingWeek: null
   };
@@ -172,6 +183,14 @@ export function prestigeRevenueMultiplier(level: number): number {
 /** Starting funds for a prestige run: +50% of the base per level. */
 export function prestigeStartingFunds(baseFunds: number, level: number): number {
   return Math.floor(Math.max(0, baseFunds) * (1 + Math.max(0, Math.floor(level)) * PRESTIGE_STARTING_FUNDS_BONUS_PER_LEVEL));
+}
+
+/**
+ * Revenue multiplier granted by sold progression items (H-level boost
+ * from the auction house). Every 5 items sold adds +10% to revenue.
+ */
+export function progressionRevenueMultiplier(points: number): number {
+  return 1 + Math.max(0, Math.floor(points / 5)) * PROGRESSION_REVENUE_BONUS_PER_5;
 }
 
 /** The slice of campaign state the meta engine needs to evaluate progress. */
@@ -236,8 +255,8 @@ export function applyWeeklyStats(
   delta: WeeklyStatsDelta = {}
 ): MetaProgressState {
   const stats = { ...meta.stats };
-  stats.totalRevenue += Math.max(0, Math.floor(report.revenue.venue + report.revenue.caravans + report.revenue.captureOps + report.revenue.contracts + report.revenue.salon + (report.revenue.city ?? 0)));
-  stats.totalExpenses += Math.max(0, Math.floor(report.expenses.wages + report.expenses.hospital + report.expenses.restZone + report.expenses.staffSlots + report.expenses.loanPayment + report.expenses.warehouse + (report.expenses.city ?? 0)));
+  stats.totalRevenue += Math.max(0, Math.floor(report.revenue.venue + report.revenue.caravans + report.revenue.captureOps + report.revenue.contracts + report.revenue.salon + (report.revenue.city ?? 0) + (report.revenue.boiler ?? 0)));
+  stats.totalExpenses += Math.max(0, Math.floor(report.expenses.wages + report.expenses.hospital + report.expenses.restZone + report.expenses.staffSlots + report.expenses.loanPayment + report.expenses.warehouse + (report.expenses.city ?? 0) + (report.expenses.boiler ?? 0)));
   stats.totalNetIncome += Math.floor(report.netIncome);
   if (report.treasuryAfter > stats.peakFunds) {
     stats.peakFunds = Math.floor(report.treasuryAfter);
@@ -260,6 +279,13 @@ export function registerAuctionSale(meta: MetaProgressState, proceeds: number): 
   const stats = { ...meta.stats };
   stats.auctionsCompleted += 1;
   stats.auctionBestSale = Math.max(stats.auctionBestSale, Math.floor(proceeds));
+  return { ...meta, stats };
+}
+
+/** Records a sold special progression item (H-level boost from the auction). */
+export function registerProgressionSale(meta: MetaProgressState): MetaProgressState {
+  const stats = { ...meta.stats };
+  stats.progressionItemsSold += 1;
   return { ...meta, stats };
 }
 
@@ -314,7 +340,9 @@ const ACHIEVEMENT_RULES: AchievementRule[] = [
   { id: 'campaign_victory', test: (_s, _stats, goalStatus) => goalStatus === 'victory' },
   { id: 'warehouse_1', test: s => s.warehouseLevel >= 1 },
   { id: 'warehouse_3', test: s => s.warehouseLevel >= 3 },
-  { id: 'warehouse_5', test: s => s.warehouseLevel >= 5 }
+  { id: 'warehouse_5', test: s => s.warehouseLevel >= 5 },
+  { id: 'first_progression', test: (_s, stats) => stats.progressionItemsSold >= 1 },
+  { id: 'progression_master', test: (_s, stats) => stats.progressionItemsSold >= 10 }
 ];
 
 /**

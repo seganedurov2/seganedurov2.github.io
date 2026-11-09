@@ -1,4 +1,5 @@
 import type { ManagedCampaignState } from './saveState';
+import { migrateCampaignState } from './saveState';
 
 /**
  * Exports the current game state to a JSON file.
@@ -19,16 +20,18 @@ export function exportGameSave(state: ManagedCampaignState, fileName: string = '
 
 /**
  * Imports a game state from a JSON file.
- * Returns the parsed state or null if validation fails.
+ * Runs the data through `migrateCampaignState` so old-schema saves are
+ * normalized to the current version before being accepted.
+ * Returns the migrated state or null if validation fails.
  */
 export function importGameSave(fileContent: string): ManagedCampaignState | null {
   try {
     const parsed = JSON.parse(fileContent);
-    // Basic validation: check for essential fields
-    if (!parsed || typeof parsed !== 'object' || !parsed.version || !parsed.campaignName) {
+    if (!parsed || typeof parsed !== 'object' || !parsed.campaignName) {
       throw new Error('Invalid save file format.');
     }
-    return parsed as ManagedCampaignState;
+    const migrated = migrateCampaignState(parsed);
+    return migrated as ManagedCampaignState;
   } catch (e) {
     console.error('Failed to import game save:', e);
     return null;

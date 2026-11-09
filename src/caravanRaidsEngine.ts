@@ -2,6 +2,9 @@ import type { Caravan, Character } from './gameEngine';
 import { generateSlaveCharacter } from './gameEngine';
 import { formatMoney } from './currency';
 
+export type RandomFn = () => number;
+const defaultRandom: RandomFn = () => Math.random();
+
 /**
  * Road ambush engine.
  *
@@ -56,6 +59,9 @@ export interface ActiveRaid {
   stakeValue: number;
   /** Capture operations only: the person the squad was sent to abduct. */
   targetName?: string;
+  /** Insurance plan attached to the mission (caravans). */
+  insurancePlan?: InsurancePlan;
+  insurancePremium?: number;
 }
 
 /** Raid modifiers contributed by the caravan depot's current level and staffing. */
@@ -85,6 +91,8 @@ export interface RaidOutcome {
   resultingStatus: RaidMissionStatus;
   message: string;
   failureMessage: string;
+  insurancePayout?: number;
+  netFundsDelta?: number;
 }
 
 /**
@@ -206,9 +214,9 @@ export function raidChanceForCaravan(caravan: Caravan, crewSkill = 55, riskReduc
   return raidChanceForRoute(caravan.destRegion, crewSkill, riskReduction, 'caravan');
 }
 
-/** Rolls a percent value (1-100), or 0 when empty. */
-function roll(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+/** Rolls an integer in [min, max] inclusive. */
+function roll(min: number, max: number, random: RandomFn = defaultRandom): number {
+  return Math.floor(random() * (max - min + 1)) + min;
 }
 
 const BANDIT_NAMES = [
@@ -228,6 +236,36 @@ const PIRATE_NAMES = [
   'Пираты Девяти фонарей'
 ];
 
+export type InsurancePlan = 'none' | 'basic' | 'standard' | 'full';
+
+export interface InsuranceTerms {
+  plan: InsurancePlan;
+  premiumRate: number;
+  coverageRate: number;
+  deductibleRate: number;
+  /** Maximum fraction of stake reimbursable after deductible. */
+  maxPayoutRate: number;
+}
+
+export const INSURANCE_PLANS: Record<InsurancePlan, InsuranceTerms> = {
+  none: { plan: 'none', premiumRate: 0, coverageRate: 0, deductibleRate: 1, maxPayoutRate: 0 },
+  basic: { plan: 'basic', premiumRate: 0.04, coverageRate: 0.35, deductibleRate: 0.20, maxPayoutRate: 0.35 },
+  standard: { plan: 'standard', premiumRate: 0.08, coverageRate: 0.60, deductibleRate: 0.12, maxPayoutRate: 0.60 },
+  full: { plan: 'full', premiumRate: 0.14, coverageRate: 0.85, deductibleRate: 0.05, maxPayoutRate: 0.85 }
+};
+
+export function insurancePremium(plan: InsurancePlan, stakeValue: number): number {
+  if (plan === 'none') return 0;
+  return Math.max(0, Math.round(stakeValue * INSURANCE_PLANS[plan].premiumRate));
+}
+
+export function insurancePayout(plan: InsurancePlan, stakeLossValue: number): number {
+  if (plan === 'none' || stakeLossValue <= 0) return 0;
+  const terms = INSURANCE_PLANS[plan];
+  const afterDeductible = Math.max(0, stakeLossValue - Math.round(stakeLossValue * terms.deductibleRate));
+  return Math.min(Math.round(stakeLossValue * terms.maxPayoutRate), Math.round(afterDeductible * terms.coverageRate));
+}
+
 interface AmbushRollInput {
   missionKind: RaidMissionKind;
   missionName: string;
@@ -243,6 +281,9 @@ interface AmbushRollInput {
   riskReduction: number;
   victoryBonus: number;
   targetName?: string;
+  insurancePlan?: InsurancePlan;
+  insurancePremium?: number;
+  random?: RandomFn;
 }
 
 /**
@@ -253,10 +294,11 @@ function rollAmbush(input: AmbushRollInput): ActiveRaid | null {
   const {
     missionKind, missionName, leaderName, leaderId, destRegion, crewSkill,
     leaderSkill, leaderLoyalty, crew, escorts, stakeValue,
-    riskReduction, victoryBonus, targetName
+    riskReduction, victoryBonus, targetName, insurancePlan = 'none', insurancePremium = 0
   } = input;
+  const random = input.random ?? defaultRandom;
 
-  if (Math.random() > raidChanceForRoute(destRegion, crewSkill, riskReduction, missionKind)) return null;
+  if (random() > raidChanceForRoute(destRegion, crewSkill, riskReduction, missionKind)) return null;
 
   const regionId = regionNameToId(destRegion) || '03_western_europe';
   const enemyType: 'bandits' | 'pirates' = MARITIME_REGIONS.has(regionId) ? 'pirates' : 'bandits';
@@ -296,7 +338,7 @@ function rollAmbush(input: AmbushRollInput): ActiveRaid | null {
     leaderId,
     destRegion,
     enemyType,
-    enemyName: names[Math.floor(Math.random() * names.length)],
+    enemyName: names[Math.floor(random() * names.length)],
     severity,
     leaderSkill,
     leaderLoyalty,
@@ -310,7 +352,9 @@ function rollAmbush(input: AmbushRollInput): ActiveRaid | null {
     depotRiskReduction: riskReduction,
     depotVictoryBonus: victoryBonus,
     stakeValue,
-    targetName
+    targetName,
+    insurancePlan,
+    insurancePremium
   };
 }
 
@@ -327,7 +371,8 @@ export function trySpawnRaid(
   leader: Character | undefined,
   crew: Character[],
   escorts: { skill: number; loyalty: number }[] = [],
-  deterrence: RaidDeterrence = {}
+  deterrence: RaidDeterrence = {},
+  random: RandomFn = defaultRandom
 ): ActiveRaid | null {
   const riskReduction = Math.max(0, deterrence.riskReduction ?? 0);
   const victoryBonus = Math.max(0, deterrence.victoryBonus ?? 0);
@@ -349,7 +394,10 @@ export function trySpawnRaid(
     escorts,
     stakeValue: caravan.potentialProfit,
     riskReduction,
-    victoryBonus
+    victoryBonus,
+    insurancePlan: caravan.insurancePlan ?? 'none',
+    insurancePremium: caravan.insurancePremium ?? 0,
+    random
   });
   if (!raid) return null;
   raid.raidId = caravan.id;
@@ -375,7 +423,8 @@ export function trySpawnCaptureRaid(
     bounty: number;
   },
   escorts: { skill: number; loyalty: number }[] = [],
-  deterrence: RaidDeterrence = {}
+  deterrence: RaidDeterrence = {},
+  random: RandomFn = defaultRandom
 ): ActiveRaid | null {
   const riskReduction = Math.max(0, deterrence.riskReduction ?? 0);
   const victoryBonus = Math.max(0, deterrence.victoryBonus ?? 0);
@@ -399,7 +448,8 @@ export function trySpawnCaptureRaid(
     stakeValue: operation.bounty,
     riskReduction,
     victoryBonus,
-    targetName: operation.targetName
+    targetName: operation.targetName,
+    random
   });
   if (!raid) return null;
   raid.raidId = operation.id;
@@ -425,30 +475,51 @@ function wipeoutChanceFor(raid: ActiveRaid): number {
  * Resolves the player's choice in an ambush mini-event and produces all of its
  * consequences. This is pure — the caller applies funds/reputation/stake/slaves.
  */
-export function resolveRaid(raid: ActiveRaid, action: RaidResolutionAction): RaidOutcome {
+export function resolveRaid(
+  raid: ActiveRaid,
+  action: RaidResolutionAction,
+  random: RandomFn = defaultRandom
+): RaidOutcome {
   switch (action) {
     case 'fight':
-      return resolveFight(raid);
+      return resolveFight(raid, random);
     case 'flee':
-      return resolveFlee(raid);
+      return resolveFlee(raid, random);
     case 'tribute':
-      return resolveTribute(raid);
+      return resolveTribute(raid, random);
   }
 }
 
-function resolveFight(raid: ActiveRaid): RaidOutcome {
-  const success = Math.random() * 100 < raid.fightChance;
+function applyInsurance(outcome: RaidOutcome, raid: ActiveRaid): RaidOutcome {
+  if (raid.insurancePlan === 'none' || raid.insurancePlan == null) return outcome;
+  const stakeLossValue = Math.round(raid.stakeValue * outcome.stakeLossFraction);
+  const payout = insurancePayout(raid.insurancePlan, stakeLossValue);
+  if (payout <= 0) return outcome;
+  const net = outcome.fundsDelta + payout;
+  const note = ` Страховка (${raid.insurancePlan}): +${formatMoney(payout)}, чистый итог ${formatMoney(net)}.`;
+  return {
+    ...outcome,
+    fundsDelta: net,
+    insurancePayout: payout,
+    netFundsDelta: net,
+    message: outcome.message ? `${outcome.message}${note}` : outcome.message,
+    failureMessage: outcome.failureMessage ? `${outcome.failureMessage}${note}` : outcome.failureMessage
+  };
+}
+
+function resolveFight(raid: ActiveRaid, random: RandomFn): RaidOutcome {
+  const success = random() * 100 < raid.fightChance;
   if (success) {
     // Win: rout the raiders, they surrender and are pressed into service.
-    const capturedSlaves = roll(1, raid.severity === 'severe' ? 3 : 2);
+    const capturedSlaves = roll(1, raid.severity === 'severe' ? 3 : 2, random);
     const slaveQuality: RaidOutcome['slaveQuality'] = raid.severity === 'severe' ? 'high'
       : raid.severity === 'moderate' ? 'medium' : 'low';
     const loot = Math.round(raid.tributeDemand * 0.6);
-    return {
+    return applyInsurance({
       success: true,
       fundsDelta: loot,
       reputationDelta: raid.severity === 'severe' ? 6 : 4,
-      stakeLossFraction: 0.1 + Math.random() * 0.15,
+      stakeLossFraction: 0.1 + random() * 0.15,
       leaderKilled: false,
       detachmentWiped: false,
       capturedSlaves,
@@ -456,17 +527,17 @@ function resolveFight(raid: ActiveRaid): RaidOutcome {
       resultingStatus: 'traveling',
       message: `Отряд отбился от ${raid.enemyType} «${raid.enemyName}»! ${capturedSlaves} нападавший(их) схвачено и обращено в службу, добыча +${formatMoney(loot)}.`,
       failureMessage: ''
-    };
+    }, raid);
   }
   // Loss: hard-fought defeat — heavy losses, and for capture squads a real risk
   // that nobody walks away.
-  const leaderKilled = Math.random() < 0.35;
-  const detachmentWiped = raid.missionKind === 'capture' && Math.random() < wipeoutChanceFor(raid);
-  return {
+  const leaderKilled = random() < 0.35;
+  const detachmentWiped = raid.missionKind === 'capture' && random() < wipeoutChanceFor(raid);
+  return applyInsurance({
     success: false,
     fundsDelta: 0,
     reputationDelta: detachmentWiped ? -8 : -4,
-    stakeLossFraction: 0.4 + Math.random() * 0.3,
+    stakeLossFraction: 0.4 + random() * 0.3,
     leaderKilled,
     detachmentWiped,
     capturedSlaves: 0,
@@ -476,18 +547,18 @@ function resolveFight(raid: ActiveRaid): RaidOutcome {
     failureMessage: detachmentWiped
       ? `«${raid.enemyName}» разбили отряд. ${raid.targetName ? `Попытка похищения ${raid.targetName} переросла` : 'Попытка'} в кровавую бойню — ни один боец не вернулся домой.`
       : `«${raid.enemyName}» прорвали охрану. ${leaderKilled ? `Глава операции ${raid.leaderName} погиб в бою. ` : ''}Ставка потеряна, операция сорвана.`
-  };
+  }, raid);
 }
 
-function resolveFlee(raid: ActiveRaid): RaidOutcome {
-  const success = Math.random() * 100 < raid.fleeChance;
+function resolveFlee(raid: ActiveRaid, random: RandomFn): RaidOutcome {
+  const success = random() * 100 < raid.fleeChance;
   if (success) {
-    return {
+    return applyInsurance({
       success: true,
       fundsDelta: 0,
       reputationDelta: 0,
       // Escaping still costs some of the stake to lighten the load.
-      stakeLossFraction: 0.1 + Math.random() * 0.1,
+      stakeLossFraction: 0.1 + random() * 0.1,
       leaderKilled: false,
       detachmentWiped: false,
       capturedSlaves: 0,
@@ -495,15 +566,15 @@ function resolveFlee(raid: ActiveRaid): RaidOutcome {
       resultingStatus: 'traveling',
       message: `Группа ушла от ${raid.enemyType} «${raid.enemyName}» под покровом ночи. Часть ставки пришлось бросить ради скорости, но отряд выжил.`,
       failureMessage: ''
-    };
+    }, raid);
   }
-  const leaderKilled = Math.random() < 0.25;
-  const detachmentWiped = raid.missionKind === 'capture' && Math.random() < wipeoutChanceFor(raid) * 0.5;
-  return {
+  const leaderKilled = random() < 0.25;
+  const detachmentWiped = raid.missionKind === 'capture' && random() < wipeoutChanceFor(raid) * 0.5;
+  return applyInsurance({
     success: false,
     fundsDelta: 0,
     reputationDelta: detachmentWiped ? -7 : -2,
-    stakeLossFraction: 0.5 + Math.random() * 0.25,
+    stakeLossFraction: 0.5 + random() * 0.25,
     leaderKilled,
     detachmentWiped,
     capturedSlaves: 0,
@@ -515,15 +586,15 @@ function resolveFlee(raid: ActiveRaid): RaidOutcome {
     failureMessage: detachmentWiped
       ? `Побег не удался — налётчики догнали отряд и покончили с ним. Ни один боец не вернулся из ${raid.destRegion}.`
       : `Побег не удался — налётчики догнали их. ${leaderKilled ? `Глава ${raid.leaderName} погиб, прикрывая отход. ` : ''}Большая часть ставки потеряна, но операция выкарабкивается в безопасное место.`
-  };
+  }, raid);
 }
 
-function resolveTribute(raid: ActiveRaid): RaidOutcome {
-  const success = Math.random() * 100 < raid.tributeChance;
+function resolveTribute(raid: ActiveRaid, random: RandomFn): RaidOutcome {
+  const success = random() * 100 < raid.tributeChance;
   if (success) {
     // Negotiated a lower price than demanded.
-    const paid = Math.round(raid.tributeDemand * (0.5 + Math.random() * 0.3));
-    return {
+    const paid = Math.round(raid.tributeDemand * (0.5 + random() * 0.3));
+    return applyInsurance({
       success: true,
       fundsDelta: -paid,
       reputationDelta: -1,
@@ -535,22 +606,22 @@ function resolveTribute(raid: ActiveRaid): RaidOutcome {
       resultingStatus: 'traveling',
       message: `Дань в ${formatMoney(paid)} выплачена «${raid.enemyName}». Операции разрешили продолжить путь.`,
       failureMessage: ''
-    };
+    }, raid);
   }
   // Raiders took the tribute and the stake anyway.
-  return {
+  return applyInsurance({
     success: false,
     fundsDelta: -raid.tributeDemand,
     reputationDelta: -3,
-    stakeLossFraction: 0.3 + Math.random() * 0.2,
-    leaderKilled: Math.random() < 0.15,
+    stakeLossFraction: 0.3 + random() * 0.2,
+    leaderKilled: random() < 0.15,
     detachmentWiped: false,
     capturedSlaves: 0,
     slaveQuality: 'low',
     resultingStatus: 'traveling',
     message: '',
     failureMessage: `Вы заплатили ${formatMoney(raid.tributeDemand)} — а «${raid.enemyName}» предало перемирие и всё равно забрало ставку. Операция продолжается, но опустошённая.`
-  };
+  }, raid);
 }
 
 /**

@@ -152,6 +152,12 @@ export interface Caravan {
   dispatchedWeek?: number;
   /** Campaign week the caravan reached a terminal state (completed / raided / lost). */
   endWeek?: number;
+  /** 0.7.1: insurance plan purchased at dispatch. */
+  insurancePlan?: 'none' | 'basic' | 'standard' | 'full';
+  /** 0.7.1: premium paid at dispatch (informational). */
+  insurancePremium?: number;
+  /** 0.7.1: incident log entries for this caravan (append-only, capped by UI). */
+  incidentHistory?: { week: number; kind: 'raid' | 'loss' | 'arrival'; summary: string; fundsDelta?: number; insurancePayout?: number }[];
 }
 
 export interface LoanApplication {
@@ -175,6 +181,8 @@ export interface WeeklyFinanceReport {
     salon: number;
     /** Municipal income of the city plan (absent in pre-0.4.1 saves). */
     city?: number;
+    /** Heat bonus of the boiler house (absent in saves before the boiler house). */
+    boiler?: number;
   };
   expenses: {
     wages: number;
@@ -185,6 +193,10 @@ export interface WeeklyFinanceReport {
     warehouse: number;
     /** City upkeep, unemployment benefits and new construction (pre-0.4.1 saves have none). */
     city?: number;
+    /** Boiler house fuel, upkeep and repairs (absent in older saves). */
+    boiler?: number;
+    /** 0.6.7: auxiliary buildings upkeep (absent in older saves). */
+    buildings?: number;
   };
   netIncome: number;
   treasuryAfter: number;

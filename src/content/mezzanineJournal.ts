@@ -384,6 +384,19 @@ export const JOURNAL_ENTRIES: readonly JournalEntry[] = [
     result: 'В эксплуатации',
     sourceUrl: 'https://journal-informatica.example.ru/developments/ji_pd_002'
   },
+  {
+    id: 'ji_gta_001',
+    section: 'practical_developments',
+    kind: 'practical_development',
+    title: 'GTA-6: локальный игровой сервер',
+    authors: ['Отдел автоматизации'],
+    year: 2026,
+    abstract: 'Локальный сервер GTA-6, развёрнутый на http://127.0.0.1:3000. Точка входа для игры внутри вкладки Мезонин.',
+    tags: ['gta-6', 'сервер', 'игра'],
+    application: 'Локальный сервер GTA-6',
+    result: 'Развёрнут и доступен по адресу http://127.0.0.1:3000',
+    sourceUrl: 'http://127.0.0.1:3000'
+  },
   // --- Программы ---
   {
     id: 'ji_prog_001',
