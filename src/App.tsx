@@ -61,10 +61,10 @@ import { AuctionHouseTab } from './components/auctionHouse/AuctionHouseTab';
 import { CaptiveLotsMarketPanel } from './components/slaveMarket/CaptiveLotsMarketPanel';
 import { SupplyContractsPanel } from './components/slaveMarket/SupplyContractsPanel';
 import { GlobalMarketTab } from './components/market/GlobalMarketTab';
-import type { ActiveRaid, RaidResolutionAction } from './caravanRaidsEngine';
+import type { ActiveRaid, InsurancePlan, RaidResolutionAction } from './caravanRaidsEngine';
 import {
   trySpawnRaid, trySpawnCaptureRaid, resolveRaid, buildCapturedSlaves,
-  raidChanceForRoute, regionNameToId, dangerForRegion
+  raidChanceForRoute, regionNameToId, dangerForRegion, insurancePremium, INSURANCE_PLANS
 } from './caravanRaidsEngine';
 import type { CaptureOperation, CaptureTargetQuality } from './captureOpsEngine';
 import {
@@ -484,6 +484,7 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
   const [destRegion, setDestRegion] = useState(REGIONS[10].name);
   const [investment, setInvestment] = useState(25000);
   const [selectedLeaderId, setSelectedLeaderId] = useState<string>(gameState.roster[0]?.id || '');
+  const [caravanInsurancePlan, setCaravanInsurancePlan] = useState<InsurancePlan>('none');
 
   // New capture operation form state
   const [captureCodename, setCaptureCodename] = useState('Операция «Бархатная ловушка»');
@@ -1855,6 +1856,9 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
     });
 
     // Process caravans
+    const appendCaravanIncident = (caravan: Caravan, week: number, kind: NonNullable<Caravan['incidentHistory']>[number]['kind'], summary: string): NonNullable<Caravan['incidentHistory']>[number][] =>
+      [...(caravan.incidentHistory ?? []), { week, kind, summary: String(summary).slice(0, 240) }].slice(-20);
+
     gameState.caravans.forEach(caravan => {
       if (caravan.status !== 'traveling') {
         updatedCaravans.push(caravan);
@@ -1864,6 +1868,7 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
       // A caravan is ambushed on every week it spends on the road (never on the
       // week it arrives).
       let raidFired = false;
+      let raidedBy: string | undefined;
       if (remaining > 0 && pendingRaids.length < raidSlots) {
         const leader = gameState.roster.find(c => (caravan.leaderId ? c.id === caravan.leaderId : c.name === caravan.leaderName));
         const crew = gameState.roster.filter(c => c.assignedVenue === 'trade'
@@ -1876,6 +1881,7 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
         });
         if (raid) {
           raidFired = true;
+          raidedBy = raid.enemyName;
           pendingRaids.push(raid);
           newLogs.push(`ЗАСАДА НА КАРАВАН: «${caravan.name}» атакован (${raid.enemyName}) на маршруте в ${caravan.destRegion}!`);
         }
@@ -1893,7 +1899,8 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
             weeksRemaining: 0,
             raidsTriggered: caravan.raidsTriggered ?? 0,
             status: 'lost',
-            endWeek: gameState.week + 1
+            endWeek: gameState.week + 1,
+            incidentHistory: appendCaravanIncident(caravan, gameState.week + 1, 'loss', `Караван «${caravan.name}» потерян при ${lossCause} на маршруте в ${caravan.destRegion}! Инвестиции потеряны (-${formatMoney(caravan.investment)}).`)
           });
           return;
         }
@@ -1924,13 +1931,17 @@ if (isOnCaptureOp(c) || hospitalPatientIds.has(c.id) || restingIds.has(c.id)) re
           weeksRemaining: 0,
           raidsTriggered: caravan.raidsTriggered ?? 0,
           status: 'completed',
-          endWeek: gameState.week + 1
+          endWeek: gameState.week + 1,
+          incidentHistory: appendCaravanIncident(caravan, gameState.week + 1, 'arrival', `Караван «${caravan.name}» благополучно прибыл в ${caravan.destRegion}. Инвестиции ${formatMoney(caravan.investment)} возвращены; товарный лот «${goodsLot.productName}» оценён в ${formatMoney(goodsLot.appraisedValue)}.`)
         });
       } else {
         updatedCaravans.push({
           ...caravan,
           weeksRemaining: remaining,
-          raidsTriggered: (caravan.raidsTriggered ?? 0) + (raidFired ? 1 : 0)
+          raidsTriggered: (caravan.raidsTriggered ?? 0) + (raidFired ? 1 : 0),
+          incidentHistory: raidFired
+            ? appendCaravanIncident(caravan, gameState.week + 1, 'raid', `ЗАСАДА НА КАРАВАН: «${caravan.name}» атакован (${raidedBy}) на маршруте в ${caravan.destRegion}!`)
+            : (caravan.incidentHistory ?? [])
         });
       }
     });
@@ -2736,8 +2747,8 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
     }
 
 
-    const loanNote = loanPayment > 0 ? ` — Кредит: -${formatMoney(loanPayment)}` : '';
-    showNotify(`Наступила неделя ${gameState.week + 1}. Чистый доход: ${formatMoney(netIncome)}${loanNote}`);
+    const loanNote = loanPayment > 0 ? t('event.weekly.loan', { amount: formatMoney(loanPayment) }) : '';
+    showNotify(t('event.weekly.notification', { week: gameState.week + 1, income: formatMoney(netIncome), loan: loanNote }));
   };
 
   const buyMarketSlave = (character: Character) => {
@@ -2801,6 +2812,11 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
     const leader = gameState.roster.find(c => c.id === selectedLeaderId);
     const leaderName = leader ? leader.name : 'Оперативник синдиката';
     const profit = Math.floor(investment * (0.8 + Math.random() * 0.6));
+    const premium = insurancePremium(caravanInsurancePlan, investment);
+    if (gameState.funds < investment + premium) {
+      showNotify('Недостаточно средств на инвестиции и страховую премию!');
+      return;
+    }
 
     const newCaravan: Caravan = {
       id: 'caravan_' + Math.random().toString(36).substring(2, 9),
@@ -2815,15 +2831,18 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
       weeksRemaining: 3,
       status: 'traveling',
       raidsTriggered: 0,
-      dispatchedWeek: gameState.week
+      dispatchedWeek: gameState.week,
+      insurancePlan: caravanInsurancePlan,
+      insurancePremium: premium,
+      incidentHistory: []
     };
 
     setGameState(prev => ({
       ...prev,
-      funds: prev.funds - investment,
+      funds: prev.funds - investment - premium,
       caravans: [newCaravan, ...prev.caravans],
       metaProgress: registerCaravanDispatched(prev.metaProgress),
-      log: [`Караван «${caravanName}» отправлен в ${destRegion} с инвестициями ${formatMoney(investment)}.`, ...prev.log]
+      log: [`Караван «${caravanName}» отправлен в ${destRegion} с инвестициями ${formatMoney(investment)}.${premium > 0 ? ` Страховка ${caravanInsurancePlan}, премия ${formatMoney(premium)}.` : ''}`, ...prev.log]
     }));
     const nextMatch = caravanName.match(/(№|#)(\d+)/);
     if (nextMatch) {
@@ -3077,7 +3096,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
     if (activeEvent && 'kind' in activeEvent && 'effects' in choice) {
       const availability = expansionChoiceAvailability(choice, gameState);
       if (!availability.available) {
-        showNotify(availability.reason || 'Выбор недоступен.');
+        showNotify(availability.reason || t('event.choice.unavailable'));
         return;
       }
       setGameState(prev => applyExpansionEventChoice(prev, activeEvent, choice));
@@ -3122,7 +3141,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
       reputation: Math.min(100, Math.max(0, prev.reputation + (choice.reputationDelta ?? 0))),
       eventHistory: [...(prev.eventHistory ?? []), { id: activeEvent?.id ?? 'unknown_event', week: prev.week, kind: 'legacy' as const }].slice(-40),
       eventCooldowns: activeEvent && choice.cooldownWeeks ? { ...(prev.eventCooldowns ?? {}), [activeEvent.id]: prev.week + choice.cooldownWeeks } : (prev.eventCooldowns ?? {}),
-      log: [`Результат события: ${choice.resultMessage}`, ...prev.log]
+      log: [`${t('event.log.result', { msg: choice.resultMessage })}`, ...prev.log]
     }));
     showNotify(choice.resultMessage);
     setActiveEvent(null);
@@ -4396,7 +4415,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
                 <AlertCircle className="w-6 h-6" />
               </div>
               <div>
-                <span className="text-[10px] font-mono px-2 py-0.5 bg-slate-800 text-slate-300 rounded uppercase">{activeEvent.category} {('kind' in activeEvent ? 'Обновление' : 'Дилемма')}</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 bg-slate-800 text-slate-300 rounded uppercase">{activeEvent.category} {('kind' in activeEvent ? t('event.type.update') : t('event.type.dilemma'))}</span>
                 <h3 className="text-lg font-bold text-white mt-1">{activeEvent.title}</h3>
               </div>
             </div>
@@ -5481,7 +5500,32 @@ contracts={gameState.tradeSupplyContracts || []}
                     </select>
                   </div>
 
-                  <button 
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">Страховка груза</label>
+                    <select
+                      value={caravanInsurancePlan}
+                      onChange={e => setCaravanInsurancePlan(e.target.value as InsurancePlan)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs focus:border-pink-500 outline-none"
+                    >
+                      {Object.entries(INSURANCE_PLANS).map(([plan, terms]) => (
+                        <option key={plan} value={plan}>
+                          {plan === 'none' ? 'Без страховки' : plan === 'basic' ? 'Базовая (4%)' : plan === 'standard' ? 'Стандарт (8%)' : 'Полная (14%)'}
+                          {terms.premiumRate > 0 ? ` • премия ${formatMoney(Math.round(investment * terms.premiumRate))}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-[10px] text-slate-400 mt-1">
+                      {caravanInsurancePlan !== 'none'
+                        ? `Покрытие убытка после franquши: ${Math.round(INSURANCE_PLANS[caravanInsurancePlan].coverageRate * 100)}%, макс. выплата ${Math.round(INSURANCE_PLANS[caravanInsurancePlan].maxPayoutRate * 100)}% stakes.`
+                        : 'Без страховки — убытки при налёте не компенсируются.'}
+                    </div>
+                  </div>
+
+                  <div className="text-[10px] font-mono text-slate-400 mt-2">
+                    Риск налёта на маршруте: <strong className="text-amber-400">{Math.round(dangerForRegion(destRegion) * 100)}% опасность региона</strong> • estimated chance <strong className="text-amber-400">{Math.round(raidChanceForRoute(destRegion, (gameState.roster.find(c => c.id === selectedLeaderId)?.skill ?? 55), 0, 'caravan') * 100)}%</strong> в неделю.
+                  </div>
+
+                  <button
                     onClick={launchCaravan}
                     className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3 rounded-lg text-xs transition shadow-lg shadow-amber-500/20 cursor-pointer flex items-center justify-center gap-2"
                   >
@@ -5504,11 +5548,21 @@ contracts={gameState.tradeSupplyContracts || []}
                              нападений за маршрут: {caravan.raidsTriggered}
                            </div>
                          )}
+                         {caravan.insurancePlan && caravan.insurancePlan !== 'none' && (
+                           <div className="text-[10px] font-mono text-purple-400/90 mt-1">
+                             Страховка: {caravan.insurancePlan} (премия {formatMoney(caravan.insurancePremium ?? 0)})
+                           </div>
+                         )}
                          {caravan.endWeek !== undefined && (
                            <div className="text-[10px] font-mono text-slate-500 mt-1">
                              Неделя завершения: {caravan.endWeek}
                            </div>
                          )}
+                         {(caravan.incidentHistory ?? []).slice(-3).map((inc, i) => (
+                           <div key={i} className="text-[10px] font-mono text-slate-400 mt-1">
+                             {inc.week} нед. • {inc.summary}
+                           </div>
+                         ))}
                        </div>
                        <div className="text-right font-mono">
                          <span className={`text-xs px-2.5 py-1 rounded-full font-bold border ${

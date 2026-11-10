@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Character } from './gameEngine';
 import {
   assessSlaveUnrest,
+  applyBdsmTraining,
+  applySlaveBreaking,
   contractRiskReason,
   deliverSlaves,
   claimContractKpi,
@@ -138,7 +140,7 @@ describe('slaveContractsEngine 0.6.6', () => {
     expect(weak.reason).toContain('срыв');
     expect(strong.percent).toBeGreaterThanOrEqual(0);
   });
-});
+
   it('supports deadline/overdelivery KPI as a separate save-compatible stream', () => {
     const contract = {
       ...generateSlaveContract('market', 10),
@@ -162,3 +164,32 @@ describe('slaveContractsEngine 0.6.6', () => {
     expect(over.overdelivery).toBe(1);
     expect(over.contract.quantityOverDelivered).toBe(1);
   });
+});
+
+describe('slaveContractsEngine (bdsm training / breaking)', () => {
+  const slave = baseChar({ isSlave: true, submission: 40, loyalty: 30 });
+  const free = baseChar({ isSlave: false, submission: 40, loyalty: 30 });
+
+  it('applyBdsmTraining: raises submission and loyalty for slaves, clamps at 100', () => {
+    const out = applyBdsmTraining(slave, 10);
+    expect(out.submission).toBe(50);
+    expect(out.loyalty).toBe(35);
+    const capped = applyBdsmTraining({ ...slave, submission: 98, loyalty: 98 }, 10);
+    expect(capped.submission).toBe(100);
+    expect(capped.loyalty).toBe(100);
+  });
+
+  it('applyBdsmTraining: gain <= 0 or non-slave is a no-op', () => {
+    expect(applyBdsmTraining(slave, 0)).toBe(slave);
+    expect(applyBdsmTraining(slave, -5)).toBe(slave);
+    expect(applyBdsmTraining(free, 10)).toBe(free);
+  });
+
+  it('applySlaveBreaking: nudges submission and loyalty up with randomness', () => {
+    const out = applySlaveBreaking(slave);
+    expect(out.submission).toBeGreaterThanOrEqual(slave.submission);
+    expect(out.loyalty).toBeGreaterThanOrEqual(slave.loyalty);
+    expect(out.submission).toBeLessThanOrEqual(100);
+    expect(out.loyalty).toBeLessThanOrEqual(100);
+  });
+});

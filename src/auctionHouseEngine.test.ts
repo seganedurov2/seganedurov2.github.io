@@ -1,21 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AUCTION_HOUSE_ADMINISTRATOR,
   AUCTION_INSPECTION_BALANCE,
   AUCTION_PROGRESSION_BALANCE,
+  buildValuationAnnouncements,
+  cancelCharacterSaleConsent,
   countCounterfeitLots,
   countProgressionItems,
   createEmptyAuctionHouse,
   createProgressionLot,
   getLotInspection,
+  hasPendingSaleConsent,
   inspectAuctionLot,
   isProgressionLot,
   normalizeAuctionHouseState,
+  NPC_AUCTION_BIDDERS,
+  quoteAuctionLot,
+  requestCharacterSaleConsent,
   sellAuctionLot,
   sellCounterfeitsBulk,
   sellProgressionLot,
   shouldSpawnProgressionItem,
+  simulateNpcBidding,
   type AuctionGoodsLot,
-  type AuctionHouseStaff
+  type AuctionHouseStaff,
+  valuationMismatch
 } from './auctionHouseEngine';
 import { PLEASURE_HOUSE_UPGRADES } from './pleasureHouseEngine';
 
@@ -165,3 +174,133 @@ describe('auctionHouseEngine (progression lots)', () => {
     });
   });
 });
+
+describe('auctionHouseEngine (NPC bidding / sales)', () => {
+  const goodsLot1 = goodsLot({ id: 'npc1', appraisedValue: 10000 });
+
+  it('simulateNpcBidding: reputation raises NPC participation rate', () => {
+    const lowRep = simulateNpcBidding(goodsLot1, 10000, 1, 0, () => 0.5);
+    const highRep = simulateNpcBidding(goodsLot1, 10000, 1, 100, () => 0.5);
+    expect(highRep.npcBidCount).toBeGreaterThanOrEqual(lowRep.npcBidCount);
+    expect(highRep.npcInterest).toHaveLength(NPC_AUCTION_BIDDERS.filter(b => b.interest === 'goods' || b.interest === 'all').length);
+  });
+
+  it('simulateNpcBidding: higher auction house level raises bids', () => {
+    const lowLevel = simulateNpcBidding(goodsLot1, 10000, 1, 50, () => 0.5);
+    const highLevel = simulateNpcBidding(goodsLot1, 10000, 5, 50, () => 0.5);
+    expect(highLevel.finalProceeds).toBeGreaterThanOrEqual(lowLevel.finalProceeds);
+  });
+
+  it('simulateNpcBidding: revealed counterfeit draws no NPC bids', () => {
+    const counterfeit = goodsLot({ id: 'cf1', authenticity: 'counterfeit', revealedAuthenticity: true, appraisedValue: 10000 });
+    const res = simulateNpcBidding(counterfeit, 10000, 3, 50, () => 0);
+    expect(res.npcBidCount).toBe(0);
+    expect(res.finalProceeds).toBe(10000);
+  });
+
+  it('sellAuctionLot: NPC winner exceeds base proceeds and names the bidder', () => {
+    const state = { ...createEmptyAuctionHouse(), pendingLots: [goodsLot({ id: 'npcwin', appraisedValue: 10000 })] };
+    // random=0.1 -> all bidders participate; variance=0.7; aggression-driven bids exceed base
+    const result = sellAuctionLot(state, 'npcwin', 6, null, 0, 3, 80, () => 0.1);
+    expect(result.sale).not.toBeNull();
+    expect(result.sale!.saleProceeds).toBeGreaterThanOrEqual(10000);
+    expect(result.sale!.winningNpcBidder).toBeTruthy();
+  });
+
+  it('sellAuctionLot: reveals counterfeit applies penalty and no scandal', () => {
+    const state = { ...createEmptyAuctionHouse(), pendingLots: [goodsLot({ id: 'cf2', authenticity: 'counterfeit', revealedAuthenticity: true, appraisedValue: 10000 })] };
+    const result = sellAuctionLot(state, 'cf2', 6, null, 0, 0, 0, () => 0);
+    expect(result.sale!.saleProceeds).toBe(Math.round(10000 * AUCTION_INSPECTION_BALANCE.counterfeitSalePenaltyPct));
+    expect(result.sale!.revealedCounterfeit).toBe(true);
+    expect(result.scandal).toBeUndefined();
+    expect(result.state.pendingLots).toHaveLength(0);
+  });
+
+  it('sellAuctionLot: undisclosed counterfeit triggers scandal and funds loss', () => {
+    const state = { ...createEmptyAuctionHouse(), pendingLots: [goodsLot({ id: 'cf3', authenticity: 'counterfeit', revealedAuthenticity: false, appraisedValue: 10000 })] };
+    const result = sellAuctionLot(state, 'cf3', 6, null, 0, 0, 0, () => 0);
+    expect(result.scandal).toMatch(/поддел/);
+    expect(result.reputationDelta).toBe(-AUCTION_INSPECTION_BALANCE.undisclosedScandalReputation);
+    expect(result.fundsDelta).toBeLessThan(0);
+  });
+
+  it('sellAuctionLot: stale lot id is a no-op', () => {
+    const result = sellAuctionLot(createEmptyAuctionHouse(), 'does-not-exist', 6);
+    expect(result.sale).toBeNull();
+    expect(result.state).toEqual(createEmptyAuctionHouse());
+  });
+});
+
+describe('auctionHouseEngine (consent flow)', () => {
+  const characterLot: AuctionGoodsLot & { characterId: string; isSlave: boolean } = {
+    id: 'char1',
+    productName: 'Имя персонажа',
+    category: 'Раб' as const,
+    characterId: 'ch1',
+    gender: 'women' as const,
+    assignedVenue: 'unassigned',
+    isSlave: true,
+    appraisedBy: 'Автоматическая оценка',
+    appraisedValue: 5000,
+    authenticity: 'genuine',
+    revealedAuthenticity: false
+  } as any;
+  const state = { ...createEmptyAuctionHouse(), pendingLots: [characterLot] };
+
+  it('request/cancel/hasPendingSaleConsent lifecycle', () => {
+    expect(hasPendingSaleConsent(state, 'char1')).toBe(false);
+    const afterRequest = requestCharacterSaleConsent(state, 'char1', 6);
+    expect(hasPendingSaleConsent(afterRequest, 'char1')).toBe(true);
+    const request = afterRequest.pendingSaleConsents[0];
+    expect(request.lotId).toBe('char1');
+    expect(request.lotName).toBe('Имя персонажа');
+    expect(request.characterId).toBe('ch1');
+    expect(request.isSlave).toBe(true);
+    expect(request.appraisedValue).toBe(5000);
+    expect(request.administratorName).toBe(AUCTION_HOUSE_ADMINISTRATOR);
+
+    // duplicate request is a no-op
+    const again = requestCharacterSaleConsent(afterRequest, 'char1', 7);
+    expect(again.pendingSaleConsents).toHaveLength(1);
+
+    const afterCancel = cancelCharacterSaleConsent(afterRequest, 'char1');
+    expect(hasPendingSaleConsent(afterCancel, 'char1')).toBe(false);
+    expect(afterCancel.pendingSaleConsents).toHaveLength(0);
+  });
+
+  it('cancelCharacterSaleConsent for unknown lot is a no-op', () => {
+    const after = cancelCharacterSaleConsent(state, 'nope');
+    expect(after.pendingSaleConsents).toHaveLength(0);
+  });
+});
+
+describe('auctionHouseEngine (valuation / NaN protection)', () => {
+  it('valuationMismatch detects whole-dollar divergence and is NaN-safe', () => {
+    expect(valuationMismatch(1000, 1000)).toBe(false);
+    expect(valuationMismatch(1000, 1001)).toBe(true);
+    expect(valuationMismatch(0, 1)).toBe(true);
+    expect(valuationMismatch(NaN as unknown as number, 1000)).toBe(false);
+    expect(valuationMismatch(1000, NaN as unknown as number)).toBe(false);
+  });
+
+  it('quoteAuctionLot guards against NaN and negative appraised value', () => {
+    const nanLot = { ...goodsLot({ id: 'nan1' }), appraisedValue: NaN as unknown as number };
+    const quote = quoteAuctionLot(nanLot, null, 0);
+    expect(quote.appraisedValue).toBe(0);
+    expect(quote.saleProceeds).toBe(0);
+
+    const negLot = { ...goodsLot({ id: 'neg1' }), appraisedValue: -500 };
+    const negQuote = quoteAuctionLot(negLot, null, 0);
+    expect(negQuote.appraisedValue).toBe(0);
+    expect(negQuote.saleProceeds).toBe(0);
+  });
+
+  it('buildValuationAnnouncements returns appraiser + auctioneer messages', () => {
+    const announcements = buildValuationAnnouncements(goodsLot({ id: 'ann1', appraisedValue: 5000 }), 8000, null, null, 0, true);
+    expect(announcements).toHaveLength(2);
+    expect(announcements[0].speaker).toBe('appraiser');
+    expect(announcements[1].speaker).toBe('auctioneer');
+    expect(announcements[1].text).toContain('Продажа подтверждена.');
+  });
+});
+

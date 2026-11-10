@@ -611,6 +611,44 @@ function normalizeCaravan(caravan: Caravan): Caravan {
   };
 }
 
+/**
+ * Normalizes a saved capture operation. Legacy saves may omit the 0.7.2 fields
+ * (budget, bounty, capture chance, route danger), so safe defaults are applied
+ * and old slots keep loading without data loss.
+ */
+function normalizeCaptureOperation(op: CaptureOperation): CaptureOperation {
+  const validQuality = ['low', 'medium', 'high', 'elite'].includes(op.targetQuality as any)
+    ? (op.targetQuality as CaptureOperation['targetQuality'])
+    : 'medium';
+  const validStatus = ['outbound', 'completed', 'failed', 'lost'].includes(op.status as any)
+    ? (op.status as CaptureOperation['status'])
+    : 'outbound';
+  const weeksTotal = Math.max(1, Math.floor(Number(op.weeksTotal) || 2));
+  const weeksRemaining = Math.max(0, Math.min(weeksTotal, Math.floor(Number(op.weeksRemaining) || 0)));
+  return {
+    ...op,
+    codename: typeof op.codename === 'string' && op.codename ? op.codename : 'Операция без названия',
+    targetName: typeof op.targetName === 'string' && op.targetName ? op.targetName : 'Неизвестная цель',
+    targetRegionId: typeof op.targetRegionId === 'string' && op.targetRegionId ? op.targetRegionId : '04_eastern_europe',
+    targetRegionName: typeof op.targetRegionName === 'string' && op.targetRegionName ? op.targetRegionName : 'Восточная Европа и Балканы',
+    targetQuality: validQuality,
+    upfrontCost: Math.max(0, Math.floor(Number(op.upfrontCost) || 0)),
+    bounty: Math.max(0, Math.floor(Number(op.bounty) || 0)),
+    leaderId: typeof op.leaderId === 'string' && op.leaderId ? op.leaderId : '',
+    leaderName: typeof op.leaderName === 'string' && op.leaderName ? op.leaderName : 'Оперативник синдиката',
+    squadIds: Array.isArray(op.squadIds) ? op.squadIds.filter((id): id is string => typeof id === 'string') : [],
+    squadSize: Math.max(0, Math.floor(Number(op.squadSize) || 0)),
+    squadAvgSkill: Math.max(0, Math.min(100, Math.floor(Number(op.squadAvgSkill) || 0))),
+    squadAvgLoyalty: Math.max(0, Math.min(100, Math.floor(Number(op.squadAvgLoyalty) || 0))),
+    weeksTotal,
+    weeksRemaining,
+    status: validStatus,
+    raidsTriggered: Math.max(0, Math.floor(Number(op.raidsTriggered) || 0)),
+    captureChance: Math.max(0, Math.min(100, Math.floor(Number(op.captureChance) || 50))),
+    routeDanger: Math.max(0, Math.min(1, Number(op.routeDanger) || 0.4))
+  };
+}
+
 function normalizeDependent(value: unknown): Dependent | null {
   if (!isRecord(value)
     || typeof value.id !== 'string'
@@ -906,7 +944,9 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
       : [],
     caravans: Array.isArray(parsed.caravans) ? parsed.caravans.map(normalizeCaravan) : [],
     captureOperations: Array.isArray(parsed.captureOperations)
-      ? (parsed.captureOperations as CaptureOperation[]).filter(op => isRecord(op) && typeof op.id === 'string')
+      ? (parsed.captureOperations as CaptureOperation[])
+          .filter(op => isRecord(op) && typeof op.id === 'string')
+          .map(normalizeCaptureOperation)
       : [],
     hospital: normalizeHospital(parsed.hospital, roster),
     activeLoan: normalizeLoan(parsed.activeLoan),

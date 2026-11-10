@@ -10,6 +10,7 @@ import type {
 } from './expansionTypes';
 import { getBuildingDefinition } from './buildingsEngine';
 import { EXPANSION_EVENTS } from './content/expansionEvents';
+import { t } from './i18n';
 
 export type ExpandedEvent = ExpansionEvent;
 
@@ -112,9 +113,9 @@ export function expansionEventCooldownsAfterChoice(
 export function expansionChoiceAvailability(choice: ExpansionEventChoice, state: { funds: number; reputation: number }): { available: boolean; reason?: string } {
   if (choice.disabledReason) return { available: false, reason: choice.disabledReason };
   const fundsCost = Math.max(0, choice.requiresFunds ?? 0, choice.effects.reduce((sum, effect) => sum + (effect.type === 'funds' ? Math.max(0, -effect.delta) : 0), 0));
-  if (state.funds < fundsCost) return { available: false, reason: `Недостаточно средств: нужно ${fundsCost.toLocaleString('ru-RU')} $.` };
+  if (state.funds < fundsCost) return { available: false, reason: t('event.insufficient.funds', { amount: fundsCost.toLocaleString('ru-RU') }) };
   const reputationCost = Math.max(0, choice.requiresReputation ?? 0, choice.effects.reduce((sum, effect) => sum + (effect.type === 'reputation' ? Math.max(0, -effect.delta) : 0), 0));
-  if (state.reputation < reputationCost) return { available: false, reason: `Недостаточно репутации: нужно ${reputationCost}.` };
+  if (state.reputation < reputationCost) return { available: false, reason: t('event.insufficient.reputation', { amount: reputationCost }) };
   return { available: true };
 }
 
@@ -123,12 +124,12 @@ export function expansionChoiceSummary(choice: ExpansionEventChoice): string[] {
   for (const effect of choice.effects) {
     if (effect.type === 'funds' && effect.delta) summary.push(`${effect.delta > 0 ? '+' : ''}${effect.delta} $`);
     if (effect.type === 'reputation' && effect.delta) summary.push(`${effect.delta > 0 ? '+' : ''}${effect.delta} реп.`);
-    if (effect.type === 'employeeMorale' && effect.delta) summary.push(`${effect.delta > 0 ? '+' : ''}${effect.delta} мораль${effect.specialty ? ` (${effect.specialty})` : ''}`);
-    if (effect.type === 'employeeExperience' && effect.delta) summary.push(`+${effect.delta} опыт${effect.specialty ? ` (${effect.specialty})` : ''}`);
+    if (effect.type === 'employeeMorale' && effect.delta) summary.push(t('event.summary.morale', { delta: effect.delta, specialtyLabel: effect.specialty ? ` (${effect.specialty})` : '' }));
+    if (effect.type === 'employeeExperience' && effect.delta) summary.push(t('event.summary.experience', { delta: effect.delta, specialtyLabel: effect.specialty ? ` (${effect.specialty})` : '' }));
     if (effect.type === 'buildingLevel' && effect.delta) summary.push(`${effect.delta > 0 ? '+' : ''}${effect.delta} ур. здания`);
   }
-  if (choice.deferredEffects?.length) summary.push(`отложено: ${choice.deferredEffects.length}`);
-  if (choice.riskHint) summary.push(choice.riskHint);
+  if (choice.deferredEffects?.length) summary.push(t('event.summary.deferred', { count: choice.deferredEffects.length }));
+  if (choice.riskHint) summary.push(t('event.summary.risk', { riskHint: choice.riskHint }));
   return summary;
 }
 
@@ -139,7 +140,7 @@ function normalizeDeferredEffect(raw: DeferredExpansionEventEffect, week: number
     sourceEventId,
     sourceChoiceId,
     triggerWeek: Math.max(week, Math.floor(Number(raw.triggerWeek) || week)),
-    label: typeof raw.label === 'string' && raw.label ? raw.label : 'Отложенный эффект',
+    label: typeof raw.label === 'string' && raw.label ? raw.label : t('event.deferred.default'),
     effects: raw.effects.filter((effect): effect is ExpansionEventEffect => !!effect && typeof effect === 'object' && 'type' in effect)
   };
 }
@@ -200,7 +201,7 @@ export function applyDeferredExpansionEffects<T extends ExpansionEffectsState>(s
   if (!due.length) return { ...state, deferredEventEffects: pending.slice(-MAX_DEFERRED_EFFECTS) } as T;
   let next = { ...state, deferredEventEffects: pending.slice(-MAX_DEFERRED_EFFECTS) } as T;
   for (const item of due) next = applyExpansionEffects(next, item.effects);
-  const log = due.map(item => `Отложенный эффект: ${item.label}`).slice(0, 3);
+  const log = due.map(item => t('event.log.deferred', { label: item.label })).slice(0, 3);
   return { ...next, log: [...log, ...next.log].slice(0, 50) } as T;
 }
 

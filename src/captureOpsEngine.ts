@@ -1,6 +1,6 @@
 import type { Character } from './gameEngine';
 import { generateSlaveCharacter } from './gameEngine';
-import { REGION_DANGER } from './caravanRaidsEngine';
+import { REGION_DANGER, type RandomFn } from './caravanRaidsEngine';
 import { formatMoney } from './currency';
 
 /**
@@ -241,8 +241,8 @@ export function createCaptureOperation(params: CaptureDispatchParams): CaptureOp
  * snatches the target or is driven off. Pure — the caller applies the roster,
  * treasury and reputation changes.
  */
-export function resolveCaptureArrival(operation: CaptureOperation): CaptureResolution {
-  const success = Math.random() * 100 < operation.captureChance;
+export function resolveCaptureArrival(operation: CaptureOperation, random: RandomFn = Math.random): CaptureResolution {
+  const success = random() * 100 < operation.captureChance;
 
   if (success) {
     const captured = generateCaptureTarget(operation.targetRegionId, operation.targetQuality);
@@ -271,7 +271,7 @@ export function resolveCaptureArrival(operation: CaptureOperation): CaptureResol
   const danger = routeDanger(operation.targetRegionId);
   const wipeoutChance = Math.min(0.4, 0.06 + danger * 0.18
     + (operation.targetQuality === 'elite' ? 0.12 : operation.targetQuality === 'high' ? 0.06 : 0));
-  const squadLost = Math.random() < wipeoutChance;
+  const squadLost = random() < wipeoutChance;
   const squadLostIds = squadLost ? [...operation.squadIds] : [];
   const wounded = squadLost ? [] : operation.squadIds.slice(0, Math.max(1, operation.squadIds.length - 1));
 

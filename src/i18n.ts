@@ -76,6 +76,23 @@ const DICTIONARIES: Record<Lang, Record<string, string>> = {
     'error.retry': 'Попробовать снова',
     'error.unknown': 'Неизвестная ошибка',
 
+    // Events (0.6.8)
+    'event.type.update': 'Обновление',
+    'event.type.dilemma': 'Дилемма',
+    'event.choice.unavailable': 'Выбор недоступен.',
+    'event.log.result': 'Результат события: {msg}',
+    'event.log.deferred': 'Отложенный эффект: {label}',
+    'event.deferred.default': 'Отложенный эффект',
+    'event.summary.morale': '{delta} мораль{specialtyLabel}',
+    'event.summary.experience': '+{delta} опыт{specialtyLabel}',
+    'event.summary.building': '{delta} ур. здания',
+    'event.summary.deferred': 'отложено: {count}',
+    'event.summary.risk': '{riskHint}',
+    'event.insufficient.funds': 'Недостаточно средств: нужно {amount} $.',
+    'event.insufficient.reputation': 'Недостаточно репутации: нужно {amount}.',
+    'event.weekly.notification': 'Наступила неделя {week}. Чистый доход: {income}{loan}.',
+    'event.weekly.loan': ' — Кредит: -{amount} $.',
+
     // Mezzanine report
     'report.title': 'Технический отчёт по мезонину',
     'report.object': 'Объект',
@@ -176,7 +193,24 @@ const DICTIONARIES: Record<Lang, Record<string, string>> = {
     'report.issues': 'Violations',
     'report.recommendations': 'Recommendations',
     'report.stu': 'STU required (123-FZ art. 78)',
-    'report.footer': 'Generated in the Emporium app. Report is for information only.'
+    'report.footer': 'Generated in the Emporium app. Report is for information only.',
+
+    // Events (0.6.8)
+    'event.type.update': 'Update',
+    'event.type.dilemma': 'Dilemma',
+    'event.choice.unavailable': 'Choice unavailable.',
+    'event.log.result': 'Event result: {msg}',
+    'event.log.deferred': 'Deferred effect: {label}',
+    'event.deferred.default': 'Deferred effect',
+    'event.summary.morale': '{delta} morale{specialtyLabel}',
+    'event.summary.experience': '+{delta} experience{specialtyLabel}',
+    'event.summary.building': '{delta} building level',
+    'event.summary.deferred': 'deferred: {count}',
+    'event.summary.risk': '{riskHint}',
+    'event.insufficient.funds': 'Not enough funds: need {amount} $.',
+    'event.insufficient.reputation': 'Not enough reputation: need {amount}.',
+    'event.weekly.notification': 'Week {week} begins. Net income: {income}{loan}.',
+    'event.weekly.loan': ' — Credit: -{amount} $.',
   }
 };
 
