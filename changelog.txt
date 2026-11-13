@@ -37,6 +37,9 @@ LAST UPDATED: 2026-11-13
   * Пустые дни в сетке месяца визуально не отличаются (кроме отсутствия точек).
   * Smoke-тест на живом `*.pages.dev` URL не подтверждён (сеть: `ERR_CONNECTION_RESET`).
 
+  DEPLOY
+  * Preview: https://bdsm.emporium-app.pages.dev (GitHub Pages, branch `bdsm`)
+
 [VERSION 0.7.7 - PREVIOUS RELEASE] "Достижения и мета"
 
   ПЛАН (docs/RELEASE_PLAN_0.7.7.md)
