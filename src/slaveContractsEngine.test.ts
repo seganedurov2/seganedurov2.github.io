@@ -159,8 +159,10 @@ describe('slaveContractsEngine 0.6.6', () => {
     expect(late.reward?.deadlineMet).toBe(false);
     expect(late.reward?.money).toBe(0);
 
+    // `generateSlaveContract` rolls a random buyer, and with it a random quality
+    // bar. Pin the bar to 'any' so the fixture tests overdelivery, not luck.
     const roster = [baseChar({ id: 'o1' }), baseChar({ id: 'o2' })];
-    const over = deliverSlaves({ ...contract, quantityDelivered: 2, quantityOverDelivered: 0, status: 'completed' as const }, roster, { allowOverdelivery: true });
+    const over = deliverSlaves({ ...contract, minQuality: 'any', quantityDelivered: 2, quantityOverDelivered: 0, status: 'completed' as const }, roster, { allowOverdelivery: true });
     expect(over.overdelivery).toBe(1);
     expect(over.contract.quantityOverDelivered).toBe(1);
   });

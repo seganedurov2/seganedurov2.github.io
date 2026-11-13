@@ -1,11 +1,43 @@
 CHANGELOG.txt
 ==============================================================================
 PROJECT: Pawn Pleasure
-VERSION: 0.7.7
-LAST UPDATED: 2026-11-10
+VERSION: 0.9.0
+LAST UPDATED: 2026-11-13
 ==============================================================================
 
-[VERSION 0.7.7 - IN DEVELOPMENT] "Достижения и мета"
+[VERSION 0.9.0 - RELEASE] "Pre-1.0 RC"
+
+  АРХИТЕКТУРА И ВЕРСИОНИРОВАНИЕ
+  * Версия продукта теперь читается из `package.json` и инжектится в бандл через `vite.config.ts` (`__APP_VERSION__`). Бадж в шапке показывает `v0.9.0 Web` вместо зафиксированного `v0.4.0 Web`.
+  * `package.json` / `package-lock.json` / `android/app/build.gradle` подняты до 0.9.0. Android `versionCode` по схеме `MAJOR*10000 + MINOR*100 + PATCH` = 901.
+
+  ДНЕВНОЙ КАЛЕНДАРЬ (НОВАЯ ФИЧА RC)
+  * Добавлен дневной календарь с 1 января 1845 года (`src/dayCalendar.ts`, `src/components/calendar/*`, `src/dayCalendarTabs.ts`). Календарь показывает текущий день кампании, события недели, фазы луны и позволяет переходить к следующему дню.
+  * Интеграция во вкладки: панель дня в `FinanceTab`, `BuildingsTab`, `StaffTab`, `MezzanineTab`.
+
+  СОХРАНЕНИЯ И МИГРАЦИИ
+  * Полный цикл round-trip тестов: старые фикстуры → `migrateCampaignState` → save/load → ключевые поля сохранены.
+  * `saveImportExport.test.ts`: 6 тестов экспорта/импорта с миграцией старого сохранения и отказом на битом/необъектном payload.
+  * `readCampaignFromStorage` обёрнут в try/catch, возвращает `null` вместо краша.
+  * `saveGameToSlot` создаёт `backupSlot` перед перезаписью слота.
+
+  КАЧЕСТЬ И ТЕСТЫ
+  * `vitest run`: 42 файла / 471 тестов — все проходят.
+  * `tsc -b --noEmit`: exit 0.
+  * `npm run build:web`: 12 модулей / 3115 KiB, `dist/404.html` записан.
+  * Линт: 0 ошибок, 36 предупреждений (`react-hooks/set-state-in-effect` в `App.tsx`) — зафиксировано как baseline до 1.0.
+
+  ИСПРАВЛЕНИЯ
+  * Исправлен флакующий тест `slaveContractsEngine.test.ts`: фикстура `generateSlaveContract` закрепила `minQuality: 'any'` для детерминизма.
+  * Устранена рассинхронизация версии в бандле (было `v0.4.0 Web`, стало `v0.9.0 Web`).
+
+  ИЗВЕСТНЫЕ ОГРАНИЧЕНИЯ (BACKLOG)
+  * 36 предупреждений линтера `react-hooks/set-state-in-effect` в `App.tsx` — приняты до 1.0.
+  * Календарь не хранит выбранный день в сейве — после перезагрузки возвращается на первый день недели.
+  * Пустые дни в сетке месяца визуально не отличаются (кроме отсутствия точек).
+  * Smoke-тест на живом `*.pages.dev` URL не подтверждён (сеть: `ERR_CONNECTION_RESET`).
+
+[VERSION 0.7.7 - PREVIOUS RELEASE] "Достижения и мета"
 
   ПЛАН (docs/RELEASE_PLAN_0.7.7.md)
   * Новые достижения: условия, прогресс, редкость/награда (если есть), ретро-проверка на существующих данных где безопасно.

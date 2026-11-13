@@ -3,43 +3,9 @@ import {
   Target, TrendingUp, Truck, UserPlus, Warehouse, Users, UserCog, UserRound, Music, Trophy, ShieldCheck, Zap, Gamepad2, AlertTriangle, Flame, Monitor
 } from 'lucide-react';
 import { JOURNAL_TAB_LABEL } from './content/mezzanineJournal';
+import type { GameTabId } from './dayCalendarTabs';
 
-export type AppTab =
-  | 'dashboard'
-  | 'market'
-  | 'roster'
-  | 'caravans'
-  | 'capture_ops'
-  | 'security_service'
-  | 'bdsm_room'
-  | 'hospital'
-  | 'rest_zone'
-  | 'salon'
-  | 'buildings'
-  | 'facilities_staff'
-  | 'staff'
-  | 'hiring'
-  | 'slave_market'
-  | 'supply_contracts'
-  | 'contracts'
-  | 'auction_house'
-  | 'board'
-  | 'finances'
-  | 'regions'
-  | 'pleasure_house_prisoners'
-  | 'trait_chats'
-  | 'strip_club'
-  | 'school_kindergarten'
-  | 'school'
-  | 'correction_center'
-  | 'self_development'
-  | 'meta'
-  | 'mezzanine'
-  | 'warehouse_mezzanine'
-  | 'mezzanine_journal'
-  | 'mezzanine_gta6'
-  | 'boiler_house'
-  | 'wasteland';
+export type AppTab = GameTabId;
 
 export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingUp }[] = [
   { id: 'dashboard', label: 'Командный центр', icon: TrendingUp },
@@ -78,3 +44,8 @@ export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingU
   { id: 'boiler_house', label: 'Котельная', icon: Flame },
   { id: 'wasteland', label: 'Пустошь', icon: AlertTriangle }
 ];
+
+/** Подписи вкладок для дневного календаря и хлебных крошек. */
+export function tabLabel(tab: AppTab): string {
+  return APP_NAVIGATION.find(item => item.id === tab)?.label ?? tab;
+}

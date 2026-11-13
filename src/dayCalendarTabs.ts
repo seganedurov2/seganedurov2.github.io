@@ -1,0 +1,42 @@
+/**
+ * Вкладки, к которым привязаны события дневного календаря.
+ *
+ * Отдельный модуль без зависимостей, чтобы `dayCalendar.ts` не тянул за собой
+ * `appNavigation.ts` (а вместе с ним — иконки и React-компоненты).
+ */
+export type GameTabId =
+  | "dashboard"
+  | "market"
+  | "roster"
+  | "caravans"
+  | "capture_ops"
+  | "security_service"
+  | "bdsm_room"
+  | "hospital"
+  | "rest_zone"
+  | "salon"
+  | "buildings"
+  | "facilities_staff"
+  | "staff"
+  | "hiring"
+  | "slave_market"
+  | "supply_contracts"
+  | "contracts"
+  | "auction_house"
+  | "board"
+  | "finances"
+  | "regions"
+  | "pleasure_house_prisoners"
+  | "trait_chats"
+  | "strip_club"
+  | "school_kindergarten"
+  | "school"
+  | "correction_center"
+  | "self_development"
+  | "meta"
+  | "mezzanine"
+  | "warehouse_mezzanine"
+  | "mezzanine_journal"
+  | "mezzanine_gta6"
+  | "boiler_house"
+  | "wasteland";

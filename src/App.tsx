@@ -151,6 +151,15 @@ import {
 import { triggerWeeklyMarketRefresh } from './marketRefreshLogic';
 import type { AppTab } from './appNavigation';
 import { APP_NAVIGATION } from './appNavigation';
+import { DayCalendar } from './components/calendar/DayCalendar';
+import { TabDayPanel } from './components/calendar/TabDayPanel';
+import {
+  campaignDateForDay,
+  campaignWeekForDay,
+  firstDayIndexOfWeek,
+  formatCampaignDate,
+  formatDayHeading
+} from './dayCalendar';
 import { buildActivityFeed } from './components/header/notificationFeed';
 import { NotificationCenter } from './components/header/NotificationCenter';
 import { AuthScreen } from './components/auth/AuthScreen';
@@ -170,6 +179,22 @@ import { MultiplayerPanel } from './components/multiplayer/MultiplayerPanel';
 import { MezzanineJournalTab } from './components/mezzanine/MezzanineJournalTab';
 import { MezzanineGTA6Tab } from './components/mezzanine/MezzanineGTA6Tab';
 import { WastelandTab } from './components/wasteland/WastelandTab';
+import { BoilerHouseTab } from './components/boilerHouse/BoilerHouseTab';
+import {
+  BOILER_DEFINITION_BY_ID,
+  BOILER_FUEL_BY_ID,
+  HEATED_VENUES,
+  addFuel,
+  boilerRepairCost,
+  buildBoiler,
+  fuelPurchaseCost,
+  repairBoiler,
+  setBoilerAutomation,
+  setBoilerMode,
+  type BoilerAutomation,
+  type BoilerFuelId,
+  type BoilerId
+} from './boilerHouseEngine';
 import { VenueBanner, VENUE_APPEARANCES } from './components/venue';
 import {
   ACHIEVEMENT_BY_ID,
@@ -393,6 +418,12 @@ const getFemaleSlaveCareSummary = (character: Character) => {
   };
 };
 
+/**
+ * Badge in the header. The version comes from package.json at build time, so a
+ * release bump is a single edit and the UI cannot drift from the tag.
+ */
+const APP_VERSION_LABEL = `v${__APP_VERSION__} Web`;
+
 const legacyRosterViewEnabled: boolean = false;
 
 export default function App() {
@@ -437,6 +468,10 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(() => loadLeaderboard());
 
 const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
+  // Дневной календарь: игрок выбирает день, и каждая вкладка показывает дела
+  // этого дня. По умолчанию — первый день текущей недели кампании.
+  const [selectedDayIndex, setSelectedDayIndex] = useState(() => firstDayIndexOfWeek(12));
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   // Which mezzanine map mode is shown; the game tabs keep their own state, so
   // switching between the мезонин and the campaign never resets either side.
   const [mezzanineView, setMezzanineView] = useState<'mezzanine' | AppTab>('mezzanine');
@@ -548,6 +583,14 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
   useEffect(() => {
     setOrientationLock(appSettings.orientation);
   }, [appSettings.orientation]);
+
+  // Календарь не уходит в прошлое: если выбранный день оказался в прошлой
+  // неделе (загрузка слота, откат недели), встаём на первый день текущей.
+  useEffect(() => {
+    const weekStart = firstDayIndexOfWeek(Math.max(1, Math.floor(gameState.week)));
+    const weekEnd = weekStart + 6;
+    if (selectedDayIndex < weekStart || selectedDayIndex > weekEnd) setSelectedDayIndex(weekStart);
+  }, [gameState.week, selectedDayIndex]);
 
   // Applies the UI theme (dark/light) to the document root.
   useEffect(() => {
@@ -1565,6 +1608,74 @@ const refreshCandidates = () => {
       log: [`Складской мезонин: выдано ${amount} ед. груза (осталось ${prev.warehouse.occupancy - amount}/${prev.warehouse.capacity}).`, ...prev.log].slice(0, 50)
     }));
     showNotify(`Выдано со склада: ${amount} ед.`);
+  };
+
+  /** Закупает топливо для котельной, если казна позволяет. */
+  const buyBoilerFuel = (fuelId: BoilerFuelId, units: number) => {
+    const cost = fuelPurchaseCost(fuelId, units);
+    if (units <= 0 || cost <= 0) return;
+    if (gameState.funds < cost) {
+      showNotify(`Недостаточно средств на топливо: нужно ${formatMoney(cost)}.`);
+      return;
+    }
+    setGameState(prev => ({
+      ...prev,
+      funds: prev.funds - cost,
+      boilerHouse: addFuel(prev.boilerHouse, fuelId, units),
+      log: [`Котельная: закуплено ${units} ед. «${BOILER_FUEL_BY_ID[fuelId].name}» за ${formatMoney(cost)}.`, ...prev.log].slice(0, 50)
+    }));
+    showNotify(`Котельная: топливо закуплено (${units} ед.).`);
+  };
+
+  /** Меняет режим котла: запуск, остановка, топливо или часы работы. */
+  const changeBoilerMode = (id: BoilerId, patch: { status?: 'running' | 'idle'; fuel?: BoilerFuelId; hoursPerWeek?: number }) => {
+    setGameState(prev => ({
+      ...prev,
+      boilerHouse: setBoilerMode(prev.boilerHouse, id, patch)
+    }));
+  };
+
+  /** Строит новый котёл в котельной. */
+  const buildBoilerHouseUnit = (id: BoilerId) => {
+    const definition = BOILER_DEFINITION_BY_ID[id];
+    if (gameState.boilerHouse.boilers.some(boiler => boiler.id === id)) return;
+    if (gameState.funds < definition.buildCost) {
+      showNotify(`Недостаточно средств: нужно ${formatMoney(definition.buildCost)}.`);
+      return;
+    }
+    setGameState(prev => ({
+      ...prev,
+      funds: prev.funds - definition.buildCost,
+      boilerHouse: buildBoiler(prev.boilerHouse, id) ?? prev.boilerHouse,
+      log: [`Котельная: построен «${definition.name}» за ${formatMoney(definition.buildCost)}.`, ...prev.log].slice(0, 50)
+    }));
+    showNotify(`«${definition.name}» построен.`);
+  };
+
+  /** Ремонтирует котёл: сбрасывает износ и снимает аварию. */
+  const repairBoilerHouseUnit = (id: BoilerId) => {
+    const boiler = gameState.boilerHouse.boilers.find(item => item.id === id);
+    if (!boiler) return;
+    const cost = Math.max(BOILER_DEFINITION_BY_ID[id].upkeep, boilerRepairCost(boiler));
+    if (gameState.funds < cost) {
+      showNotify(`Недостаточно средств на ремонт: нужно ${formatMoney(cost)}.`);
+      return;
+    }
+    setGameState(prev => ({
+      ...prev,
+      funds: prev.funds - cost,
+      boilerHouse: repairBoiler(prev.boilerHouse, id),
+      log: [`Котельная: «${BOILER_DEFINITION_BY_ID[id].name}» отремонтирован за ${formatMoney(cost)}.`, ...prev.log].slice(0, 50)
+    }));
+    showNotify('Котёл отремонтирован.');
+  };
+
+  /** Включает/выключает автоматику котельной и меняет её настройки. */
+  const changeBoilerAutomation = (patch: Partial<BoilerAutomation>) => {
+    setGameState(prev => ({
+      ...prev,
+      boilerHouse: setBoilerAutomation(prev.boilerHouse, patch)
+    }));
   };
 
   /** Posts or unposts a hired attendant at the rest zone. */
@@ -2749,6 +2860,27 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
 
     const loanNote = loanPayment > 0 ? t('event.weekly.loan', { amount: formatMoney(loanPayment) }) : '';
     showNotify(t('event.weekly.notification', { week: gameState.week + 1, income: formatMoney(netIncome), loan: loanNote }));
+  };
+
+  /**
+   * «Следующий день»: календарь ведёт игрока по дням недели (1845 год и дальше),
+   * а недельный расчёт срабатывает в её последний день — воскресенье.
+   * Поэтому шесть дней из семи только перелистывают календарь, и лишь седьмой
+   * закрывает неделю целиком.
+   */
+  const advanceDay = () => {
+    if (raidQueue.length > 0) return;
+    const currentWeek = Math.max(1, Math.floor(gameState.week));
+    const nextDay = selectedDayIndex + 1;
+    const nextDayWeek = campaignWeekForDay(nextDay);
+    setSelectedDayIndex(nextDay);
+    if (nextDayWeek <= currentWeek) {
+      const date = campaignDateForDay(nextDay);
+      showNotify(`${formatDayHeading(date)} ${date.year} — неделя ${currentWeek} продолжается.`);
+      return;
+    }
+    advanceWeek();
+    setSelectedDayIndex(firstDayIndexOfWeek(currentWeek + 1));
   };
 
   const buyMarketSlave = (character: Character) => {
@@ -4696,7 +4828,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
             <Sparkles className="w-6 h-6 font-bold" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-white m-0 p-0">EMPORIUM <span className="text-xs px-2 py-0.5 bg-pink-500/20 text-pink-400 border border-pink-500/30 rounded-full font-mono">v0.4.0 Web</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white m-0 p-0">EMPORIUM <span className="text-xs px-2 py-0.5 bg-pink-500/20 text-pink-400 border border-pink-500/30 rounded-full font-mono">{APP_VERSION_LABEL}</span></h1>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
               <span className="truncate">{gameState.campaignName} (Слот #{gameState.slot})</span>
               <span className="nasa-readout inline-flex shrink-0 items-center gap-1 rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] tracking-widest text-amber-200">
@@ -4709,18 +4841,28 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
         </div>
 
           {/* Status Metrics */}
-          <div className="flex flex-wrap items-center gap-4 my-2 sm:my-0 sm:gap-6">
+          <div className="flex flex-wrap items-center gap-3 my-2 sm:my-0 sm:gap-4">
           {/* Telemetry blocks: same glass surface as the script board. */}
-          <div className="flex items-center gap-2 rounded-lg border border-slate-400/15 bg-slate-950/70 px-3 py-1.5 backdrop-blur">
+          <button
+            type="button"
+            onClick={() => setIsCalendarOpen(open => !open)}
+            aria-expanded={isCalendarOpen}
+            aria-controls="campaign-day-calendar"
+            title={`Календарь кампании · ${formatCampaignDate(campaignDateForDay(selectedDayIndex))}`}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 backdrop-blur transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 ${isCalendarOpen ? 'border-amber-400/60 bg-amber-400/10' : 'border-slate-400/15 bg-slate-950/70 hover:border-amber-400/40'}`}
+          >
             <Calendar className="w-4 h-4 shrink-0 text-amber-400" />
-            <div className="leading-tight">
-              <div className="nasa-label whitespace-nowrap">Неделя</div>
+            <div className="leading-tight text-left">
+              <div className="nasa-label whitespace-nowrap">Неделя · день</div>
               <div className="nasa-readout text-sm font-semibold text-slate-100 whitespace-nowrap">
                 <span className="nasa-accent">{String(gameState.week).padStart(3, '0')}</span>
                 <span className="text-slate-500">/100</span>
               </div>
+              <div className="whitespace-nowrap text-[10px] font-normal text-slate-400">
+                {formatDayHeading(campaignDateForDay(selectedDayIndex))} {campaignDateForDay(selectedDayIndex).year}
+              </div>
             </div>
-          </div>
+          </button>
 
           <div className="flex items-center gap-2 rounded-lg border border-slate-400/15 bg-slate-950/70 px-3 py-1.5 backdrop-blur" title={`Курс BTC/USD: $1 = ₿${(1 / getBtcRate()).toFixed(8)} · 1 BTC ≈ $${getBtcRate().toLocaleString()} (реальный рыночный курс)`}>
             <Bitcoin className="w-4 h-4 shrink-0 text-sky-300" />
@@ -4753,41 +4895,52 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
           )}
         </div>
 
-        {/* Action Controls */}
-           <div className="flex items-center gap-3" data-platform={currentPlatform}>
+        {/* Action Controls: настройки и уведомления — в правом краю шапки. */}
+           <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:gap-3" data-platform={currentPlatform}>
+          <button
+            onClick={() => setShowInGameMenu(true)}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2.5 rounded-lg font-semibold flex items-center gap-2 border border-slate-700 transition cursor-pointer text-sm shadow"
+          >
+            <Save className="w-4 h-4 text-amber-400" />
+            <span className="hidden sm:inline">Меню / Сохранение</span>
+          </button>
+
+          <button
+            onClick={advanceDay}
+            disabled={raidQueue.length > 0}
+            title={raidQueue.length > 0 ? 'Сначала разберитесь с нападением' : 'Следующий день; в воскресенье закрывается неделя'}
+            className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-500 text-slate-950 px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 transition shadow-lg shadow-amber-500/20 cursor-pointer text-sm"
+          >
+            <Play className="w-4 h-4 fill-slate-950" />
+            Следующий день
+          </button>
+
+              <MultiplayerPanel gameState={gameState} setGameState={setGameState} initialRoom={multiplayerRoom} />
+
              <button
                type="button"
                onClick={() => setIsSettingsOpen(true)}
                aria-label="Настройки приложения"
                title="Настройки"
-               className="rounded-lg border border-slate-700 bg-slate-800 p-2.5 text-slate-200 transition hover:bg-slate-700"
+               className="rounded-lg border border-slate-700 bg-slate-800 p-2.5 text-slate-200 transition hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
              >
                <Settings className="w-4 h-4" />
              </button>
                <NotificationCenter feed={activityFeed} onNavigate={tab => { setActiveTab(tab); setIsMobileMenuOpen(false); }} />
-
-              <MultiplayerPanel gameState={gameState} setGameState={setGameState} initialRoom={multiplayerRoom} />
-
-
-          <button
-            onClick={() => setShowInGameMenu(true)}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2.5 rounded-lg font-semibold flex items-center gap-2 border border-slate-700 transition cursor-pointer text-sm shadow"
-          >
-            <Save className="w-4 h-4 text-amber-400" />
-            Меню / Сохранение
-          </button>
-
-          <button
-            onClick={advanceWeek}
-            disabled={raidQueue.length > 0}
-            title={raidQueue.length > 0 ? 'Сначала разберитесь с нападением' : undefined}
-            className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-500 text-slate-950 px-5 py-2.5 rounded-lg font-bold flex items-center gap-2 transition shadow-lg shadow-amber-500/20 cursor-pointer text-sm"
-          >
-            <Play className="w-4 h-4 fill-slate-950" />
-            Следующая неделя
-          </button>
         </div>
       </header>
+      )}
+
+      {/* ДНЕВНОЙ КАЛЕНДАРЬ — с 1 января 1845 года; раскрывается из плашки «Неделя · день». */}
+      {isCalendarOpen && (
+        <div id="campaign-day-calendar" className="border-b border-slate-800 bg-slate-950/60 px-3 py-3 sm:px-6">
+          <DayCalendar
+            state={gameState}
+            selectedDayIndex={selectedDayIndex}
+            onSelectDay={setSelectedDayIndex}
+            onSelectWeek={week => setSelectedDayIndex(firstDayIndexOfWeek(week))}
+          />
+        </div>
       )}
 
       {/* Header toggle */}
@@ -4837,6 +4990,13 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
 
         {/* Main Content Area */}
         <main className={`min-w-0 flex-1 overflow-y-auto ${mezzanineView === 'mezzanine' ? 'overflow-hidden p-3 sm:p-4' : activeTab === 'slave_market' || activeTab === 'supply_contracts' || activeTab === 'market' || activeTab === 'roster' || activeTab === 'strip_club' || activeTab === 'salon' ? 'max-w-none p-3 sm:p-4' : 'mx-auto w-full max-w-7xl p-4 sm:p-6'}`}>
+        {/* ДЕНЬ КАМПАНИИ — общая панель для всех вкладок: дела выбранного дня. */}
+        {mezzanineView !== 'mezzanine' && (
+          <div className="mb-4">
+            <TabDayPanel tab={activeTab} state={gameState} selectedDayIndex={selectedDayIndex} />
+          </div>
+        )}
+
         {/* BANKRUPTCY & RECEIVERSHIP WARNING BANNER */}
         {gameState.isBankrupt && (
           <div className="mb-6 bg-red-950/80 border border-red-500/50 p-4 rounded-xl flex flex-wrap items-center justify-between gap-3 text-red-200">
@@ -6461,6 +6621,21 @@ contracts={gameState.tradeSupplyContracts || []}
         {/* MEZZANINE GTA-6 TAB — локальный игровой сервер GTA-6 */}
         {activeTab === 'mezzanine_gta6' && (
           <MezzanineGTA6Tab />
+        )}
+
+        {/* BOILER HOUSE TAB — тепловой контур синдиката */}
+        {activeTab === 'boiler_house' && (
+          <BoilerHouseTab
+            week={gameState.week}
+            funds={gameState.funds}
+            state={gameState.boilerHouse}
+            activeVenues={HEATED_VENUES.filter(venue => gameState.roster.some(c => c.assignedVenue === venue)).length}
+            onBuyFuel={buyBoilerFuel}
+            onSetBoiler={changeBoilerMode}
+            onBuildBoiler={buildBoilerHouseUnit}
+            onRepairBoiler={repairBoilerHouseUnit}
+            onSetAutomation={changeBoilerAutomation}
+          />
         )}
 
         {/* WASTELAND TAB — вылазки в заражённые зоны пустоши */}

@@ -1,7 +1,13 @@
 /// <reference types="vitest/config" />
+import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+// The header badge reads the version from package.json instead of a literal in
+// App.tsx, so a release bump is one edit and the UI can never drift from it.
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+const appVersion = process.env.npm_package_version ?? pkg.version
 
 // Agent worktrees (.kilo/worktrees/<name>) are full checkouts of this app. A
 // plain `npm test` from the root used to pick their tests up as well and fail on
@@ -18,6 +24,9 @@ export default defineConfig({
   // GitHub Pages project subpath (/<repo>/), e.g. when opened as a
   // Telegram Mini App.
   base: './',
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion)
+  },
   // Allow localtunnel (loca.lt) hostnames to reach the dev/preview server
   // when testing through a temporary tunnel.
   server: {
