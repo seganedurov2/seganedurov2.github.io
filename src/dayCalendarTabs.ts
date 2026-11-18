@@ -23,6 +23,7 @@ export type GameTabId =
   | "supply_contracts"
   | "contracts"
   | "auction_house"
+  | "decrees"
   | "board"
   | "finances"
   | "regions"
@@ -39,4 +40,9 @@ export type GameTabId =
   | "mezzanine_journal"
   | "mezzanine_gta6"
   | "boiler_house"
-  | "wasteland";
+  | "wasteland"
+  | "bondage_arena"
+  | "arena_career"
+  | "arena_management"
+  | "training_grounds"
+  | "arena_spectator";

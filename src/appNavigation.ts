@@ -1,6 +1,7 @@
 import {
   BedDouble, Brain, Building2, Bitcoin, FileText, Gavel, GraduationCap, Handshake, HeartPulse, Landmark, MessageSquare, Scissors, ShieldAlert, ShoppingCart,
-  Target, TrendingUp, Truck, UserPlus, Warehouse, Users, UserCog, UserRound, Music, Trophy, ShieldCheck, Zap, Gamepad2, AlertTriangle, Flame, Monitor
+  Target, TrendingUp, Truck, UserPlus, Warehouse, Users, UserCog, UserRound, Music, Trophy, ShieldCheck, Zap, Gamepad2, AlertTriangle, Flame, Monitor,
+  Sword, Medal, Dumbbell, Tv, ScrollText
 } from 'lucide-react';
 import { JOURNAL_TAB_LABEL } from './content/mezzanineJournal';
 import type { GameTabId } from './dayCalendarTabs';
@@ -33,6 +34,7 @@ export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingU
   { id: 'supply_contracts', label: 'Поставки рабов', icon: Handshake },
   { id: 'contracts', label: 'VIP-контракты', icon: FileText },
   { id: 'auction_house', label: 'Аукционный дом', icon: Gavel },
+  { id: 'decrees', label: 'Указы и приказы', icon: ScrollText },
   { id: 'board', label: 'Совет директоров', icon: Landmark },
   { id: 'finances', label: 'Финансы и займы', icon: Bitcoin },
   { id: 'regions', label: 'Глобальные регионы', icon: Building2 },
@@ -42,7 +44,12 @@ export const APP_NAVIGATION: { id: AppTab; label: string; icon: typeof TrendingU
   { id: 'mezzanine_gta6', label: 'GTA-6', icon: Monitor },
   { id: 'mezzanine', label: 'Мезонин', icon: Gamepad2 },
   { id: 'boiler_house', label: 'Котельная', icon: Flame },
-  { id: 'wasteland', label: 'Пустошь', icon: AlertTriangle }
+  { id: 'wasteland', label: 'Пустошь', icon: AlertTriangle },
+  { id: 'bondage_arena', label: 'Bondage Arena', icon: Sword },
+  { id: 'arena_career', label: 'Карьера на арене', icon: Medal },
+  { id: 'arena_management', label: 'Управление ареной', icon: Dumbbell },
+  { id: 'training_grounds', label: 'Тренировочные площадки', icon: Dumbbell },
+  { id: 'arena_spectator', label: 'Зритель / Реплеи', icon: Tv },
 ];
 
 /** Подписи вкладок для дневного календаря и хлебных крошек. */

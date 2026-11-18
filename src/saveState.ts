@@ -27,8 +27,10 @@ import {
   type MarketImprovementRequest
 } from './marketImprovementsEngine';
 import { formatMoney } from './currency';
+import type { RandomFn } from './weekRandom';
 import { createDefaultMezzanineView, normalizeMezzanineViewState, type MezzanineViewState } from './mezzanineViewState';
 import { createCampaignScript, normalizeCampaignScript, type CampaignScriptState } from './campaignScript';
+import { emptyDecreeState, normalizeDecreeState, type DecreeState } from './decreesEngine';
 import { createWarehouseState, normalizeWarehouseState, type WarehouseState } from './warehouseEngine';
 import { createBoilerHouseState, normalizeBoilerHouseState, type BoilerHouseState } from './boilerHouseEngine';
 import {
@@ -44,6 +46,16 @@ import {
   normalizeCityHubOpenedAt,
   type CityEconomyState
 } from './cityEconomyState';
+import type { ShooterCareerSave } from './shooter/career';
+export type { ShooterCareerSave } from './shooter/career';
+
+/**
+ * Arena sponsorship contract — weekly payout for brand placement during
+ * matches. The shape lives in the engine so the save format and the weekly
+ * tick cannot drift apart; re-exported here for existing imports.
+ */
+import type { SponsorshipContract } from './slaveContractsEngine';
+export type { SponsorshipContract } from './slaveContractsEngine';
 
 export interface ManagedCampaignState extends CampaignState {
   beautySalon: BeautySalonState;
@@ -109,9 +121,17 @@ export interface ManagedCampaignState extends CampaignState {
   boilerHouse: BoilerHouseState;
   /** Which act of the campaign script the run is in. */
   campaignScript: CampaignScriptState;
+  /** Подписанные указы и приказы синдиката (ЭП Ed25519). */
+  decrees: DecreeState;
+  /** Bondage Arena career profile and match history for cross-mode integration. */
+  shooterCareer?: ShooterCareerSave;
+  /** Active arena sponsorship contracts. */
+  sponsorshipContracts?: SponsorshipContract[];
 }
 
 export interface InitialCampaignOptions {
+  /** Источник случайности для стартового ростера и рынка (W0 переноса на Unity). */
+  random?: RandomFn;
   campaignName?: string;
   ceoName?: string;
   ceoGender?: Character['gender'];
@@ -121,13 +141,18 @@ export interface InitialCampaignOptions {
   fresh?: boolean;
 }
 
-const createStartingRoster = (ceoName: string, week: number, ceoGender?: Character['gender']): Character[] => {
-  const ceo = generateCharacter('03_western_europe', ceoGender);
+const createStartingRoster = (
+  ceoName: string,
+  week: number,
+  ceoGender?: Character['gender'],
+  random: RandomFn = Math.random
+): Character[] => {
+  const ceo = generateCharacter('03_western_europe', ceoGender, random);
   ceo.name = ceoName;
   ceo.role = 'Chief Executive Officer';
   return [
     { ...ceo, acquiredWeek: week },
-    { ...generateCharacter('04_eastern_europe'), name: 'Дмитрий Новак', role: 'Logistics Director', acquiredWeek: week }
+    { ...generateCharacter('04_eastern_europe', undefined, random), name: 'Дмитрий Новак', role: 'Logistics Director', acquiredWeek: week }
   ];
 };
 
@@ -139,12 +164,16 @@ const ALL_REGION_IDS = [
 ];
 
 export function createInitialCampaign(options: InitialCampaignOptions = {}): ManagedCampaignState {
-  const campaignName = options.campaignName ?? 'Глобальный синдикат «Эмпориум»';
+  const campaignName = options.campaignName ?? 'Калинковичи ЗБХ';
   const ceoName = options.ceoName ?? 'Елена Вэнс (CEO)';
   const ceoGender = options.ceoGender;
   const week = options.week ?? 12;
   const fresh = options.fresh ?? false;
-  const roster = createStartingRoster(ceoName, week, ceoGender);
+  // W0 переноса на Unity: стартовый ростер и рынок всегда строились глобальным
+  // `Math.random`, поэтому одинаковая кампания имела разные имена и навыки.
+  // Теперь источник можно подставить; по умолчанию — прежний Math.random.
+  const random: RandomFn = options.random ?? Math.random;
+  const roster = createStartingRoster(ceoName, week, ceoGender, random);
   if (options.ceoImage) roster[0].image = options.ceoImage;
 
   return {
@@ -160,7 +189,7 @@ export function createInitialCampaign(options: InitialCampaignOptions = {}): Man
     activeLoan: null,
     lastWeeklyReport: null,
     roster,
-    marketPool: ALL_REGION_IDS.map(regionId => generateCharacter(regionId)),
+    marketPool: ALL_REGION_IDS.map(regionId => generateCharacter(regionId, undefined, random)),
     reservedMarketCharacterIds: [],
     dependents: [],
      caravans: fresh ? [] : [{
@@ -239,11 +268,12 @@ export function createInitialCampaign(options: InitialCampaignOptions = {}): Man
     warehouse: createWarehouseState(),
     boilerHouse: createBoilerHouseState(),
     campaignScript: createCampaignScript(week),
+    decrees: emptyDecreeState(),
     log: [
       `Неделя ${week}: кампания успешно запущена.`,
       fresh
         ? `Кампания ${campaignName} начата под руководством CEO ${ceoName} с ${formatMoney((options.funds ?? 125000))}.`
-        : 'Добро пожаловать в «Эмпориум», веб-версия. Объекты и система сотрудников готовы.'
+        : 'Добро пожаловать в «Калинковичи ЗБХ», веб-версия. Объекты и система сотрудников готовы.'
     ],
     marketRefreshDone: false,
     marketDemand: createInitialMarketDemand(),
@@ -1012,6 +1042,7 @@ export function migrateCampaignState(raw: unknown): ManagedCampaignState {
     warehouse: normalizeWarehouseState(parsed.warehouse),
     boilerHouse: normalizeBoilerHouseState(parsed.boilerHouse),
     campaignScript: normalizeCampaignScript(parsed.campaignScript, savedWeek),
+    decrees: normalizeDecreeState(parsed.decrees),
     log: Array.isArray(parsed.log) ? parsed.log.filter((entry): entry is string => typeof entry === 'string') : []
   } as ManagedCampaignState;
 }

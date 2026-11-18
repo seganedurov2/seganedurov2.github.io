@@ -9,10 +9,11 @@ import {
   Users, Calendar, Bitcoin, Award,
 
 
-  ArrowRight, Play, AlertCircle, Truck, Sparkles, CreditCard, Maximize2, X, HeartPulse,
+  ArrowRight, Play, AlertCircle, Sparkles, CreditCard, Maximize2, X, HeartPulse,
   FolderOpen, PlusCircle, Trash2, Save, ArrowLeft, Shield, Warehouse, ArrowUpDown,
-  Menu, ChevronLeft, ChevronRight, Target, Trophy, Crown, Gavel, Settings, Bell, Lock, Key
+  Menu, ChevronLeft, ChevronRight, Target, Trophy, Crown, Gavel, Settings, Bell, Lock, Key, Download
 } from 'lucide-react';
+import { getInstallPrompt, isIos, isInstalled, promptInstall, subscribeInstallPrompt } from './pwaInstall';
 import type { Character, Caravan, LoanApplication, WeeklyFinanceReport } from './gameEngine';
 import { getAuctionHouseStaff, sellAuctionLot as sellAuctionLotEngine, createCharacterLot, buildValuationAnnouncements, valuationMismatch, requestCharacterSaleConsent, cancelCharacterSaleConsent, hasPendingSaleConsent, AUCTION_HOUSE_ADMINISTRATOR, inspectAuctionLot as inspectAuctionLotEngine, sellCounterfeitsBulk as sellCounterfeitsBulkEngine, createGoodsLot, AUCTION_INSPECTION_BALANCE } from './auctionHouseEngine';
 import type { AuctionLot } from './auctionHouseEngine';
@@ -37,7 +38,8 @@ import {
   warehouseUpgradeCost,
   warehouseWeeklyUpkeep,
   upgradeWarehouse,
-  canStore
+  canStore,
+  MATERIALS
 } from './warehouseEngine';
 import type { MezzanineViewState } from './mezzanineViewState';
 import type { CityPlanSave } from './cityPlanState';
@@ -61,10 +63,11 @@ import { AuctionHouseTab } from './components/auctionHouse/AuctionHouseTab';
 import { CaptiveLotsMarketPanel } from './components/slaveMarket/CaptiveLotsMarketPanel';
 import { SupplyContractsPanel } from './components/slaveMarket/SupplyContractsPanel';
 import { GlobalMarketTab } from './components/market/GlobalMarketTab';
-import type { ActiveRaid, InsurancePlan, RaidResolutionAction } from './caravanRaidsEngine';
+import { CaravansTab, ContractsTab, GlobalRegionsTab } from './components/trade';
+import type { ActiveRaid, RaidResolutionAction } from './caravanRaidsEngine';
 import {
   trySpawnRaid, trySpawnCaptureRaid, resolveRaid, buildCapturedSlaves,
-  raidChanceForRoute, regionNameToId, dangerForRegion, insurancePremium, INSURANCE_PLANS
+  raidChanceForRoute, regionNameToId, dangerForRegion
 } from './caravanRaidsEngine';
 import type { CaptureOperation, CaptureTargetQuality } from './captureOpsEngine';
 import {
@@ -96,6 +99,7 @@ import { applyTraitOperation, type TraitId, type TraitOperation } from './selfDe
 import { HospitalTab } from './components/hospital/HospitalTab';
 import { SecurityServiceTab } from './components/security/SecurityServiceTab';
 import { BDSMRoomTab } from './components/bdsm/BDSMRoomTab';
+import { BondageArenaTab, ArenaManagementTab, ArenaCareerTab, ArenaSpectatorTab, TrainingGroundsTab } from './components/bondageArena';
 import type { Psychologist } from './psychologistEngine';
 import {
   advancePsychologistWeek, hospitalPsychologists
@@ -177,6 +181,8 @@ import { BeautySalonTab } from './components/salon/BeautySalonTab';
 import { MezzanineWarehouseTab } from './components/warehouse/MezzanineWarehouseTab';
 import { MultiplayerPanel } from './components/multiplayer/MultiplayerPanel';
 import { MezzanineJournalTab } from './components/mezzanine/MezzanineJournalTab';
+import { DecreesTab } from './components/decrees/DecreesTab';
+import { DECREE_KIND_LABELS, DECREE_RANK_LABELS, type SignedDecree } from './decreesEngine';
 import { MezzanineGTA6Tab } from './components/mezzanine/MezzanineGTA6Tab';
 import { WastelandTab } from './components/wasteland/WastelandTab';
 import { BoilerHouseTab } from './components/boilerHouse/BoilerHouseTab';
@@ -211,7 +217,6 @@ import {
   recordCampaignResult,
   registerAuctionSale,
   registerBuildingConstructed,
-  registerCaravanDispatched,
   registerLoanRepaid,
   registerLoanTaken,
   registerProgressionSale,
@@ -391,7 +396,7 @@ const getSlotInfo = (slotNum: number): SaveSlotInfo => {
     const parsed = JSON.parse(data);
     return {
       slotNumber: slotNum,
-      campaignName: parsed.campaignName || 'Синдикат Эмпориум',
+      campaignName: parsed.campaignName || 'Калинковичи ЗБХ',
       week: parsed.week || 1,
       funds: parsed.funds || 0,
       timestamp: parsed.timestamp || new Date().toLocaleString(),
@@ -426,6 +431,46 @@ const APP_VERSION_LABEL = `v${__APP_VERSION__} Web`;
 
 const legacyRosterViewEnabled: boolean = false;
 
+/**
+ * «Установить приложение» на титульном экране.
+ * Показываеться, только если браузер дал свой install-prompt (Chromium) или
+ * это iOS — там установка ручная, через меню «Поделиться».
+ */
+function InstallAppButton() {
+  const [, forceRender] = useState(0);
+  const [showIosHint, setShowIosHint] = useState(false);
+
+  useEffect(() => subscribeInstallPrompt(() => forceRender((n) => n + 1)), []);
+
+  if (isInstalled()) return null;
+  const canPrompt = getInstallPrompt() !== null;
+  if (!canPrompt && !isIos()) return null;
+
+  return (
+    <>
+      <button
+        onClick={async () => {
+          if (canPrompt) {
+            const shown = await promptInstall();
+            if (shown) return;
+          }
+          setShowIosHint((v) => !v);
+        }}
+        className="w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-3 px-6 rounded-xl border border-slate-700 transition flex items-center justify-center gap-2 cursor-pointer"
+      >
+        <Download className="w-4 h-4 text-emerald-400" />
+        Установить приложение
+      </button>
+      {showIosHint && (
+        <p className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-left text-[11px] leading-relaxed text-slate-400">
+          На iPhone/iPad: кнопка «Поделиться» в Safari → «На экран „Домой“».
+          Откройте меню браузера → «Установить приложение» / «Добавить на главный экран».
+        </p>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   useBtcRate();
   const [currentPlatform, setCurrentPlatform] = useState<Platform>(() =>
@@ -436,7 +481,7 @@ export default function App() {
 
 
   // New game creator state
-  const [newCampaignName, setNewCampaignName] = useState('Глобальный синдикат Эмпориум');
+  const [newCampaignName, setNewCampaignName] = useState('Калинковичи ЗБХ');
   const [newCeoName, setNewCeoName] = useState('Елена Вэнс');
   const [newCeoGender, setNewCeoGender] = useState<Character['gender']>('women');
   const [newCeoBirthDate, setNewCeoBirthDate] = useState('1985-06-15');
@@ -513,13 +558,6 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
 
   // Everything the player has to look at, folded into the four header dropdown sections.
   const activityFeed = buildActivityFeed(gameState, { raids: raidQueue, activeEvent, notices: hospitalNotices });
-
-  // New caravan form state
-  const [caravanName, setCaravanName] = useState('Трансконтинентальный маршрут №1');
-  const [destRegion, setDestRegion] = useState(REGIONS[10].name);
-  const [investment, setInvestment] = useState(25000);
-  const [selectedLeaderId, setSelectedLeaderId] = useState<string>(gameState.roster[0]?.id || '');
-  const [caravanInsurancePlan, setCaravanInsurancePlan] = useState<InsurancePlan>('none');
 
   // New capture operation form state
   const [captureCodename, setCaptureCodename] = useState('Операция «Бархатная ловушка»');
@@ -691,6 +729,8 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
 
   const saveGameToSlot = async (slotNum: number) => {
     backupSlot(slotNum);
+    // Event-handler code, not render: reading the clock here is what stamps the save.
+    // eslint-disable-next-line react-hooks/purity
     const updatedState = { ...gameState, slot: slotNum, timestamp: new Date().toLocaleString() };
     setGameState(updatedState);
     const dp = loadDataProtection();
@@ -767,7 +807,7 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
 
   const startNewCampaign = () => {
     const newState = createInitialCampaign({
-      campaignName: newCampaignName.trim() || 'Глобальный синдикат Эмпориум',
+      campaignName: newCampaignName.trim() || 'Калинковичи ЗБХ',
       ceoName: `${newCeoName.trim() || 'Елена Вэнс'} (${newCeoGender === 'women' ? 'женщина' : newCeoGender === 'men' ? 'мужчина' : 'трансгендер'}, ${newCeoBirthDate}, ${newCeoBirthPlace}) (генеральный директор)`,
       ceoGender: newCeoGender,
       ceoImage: newCeoPhoto ?? newCeoPortraitUrl ?? undefined,
@@ -793,7 +833,7 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
   const startPrestigeCampaign = () => {
     const nextLevel = (gameState.metaProgress?.prestige.level ?? 0) + 1;
     const newState = createInitialCampaign({
-      campaignName: newCampaignName.trim() || 'Глобальный синдикат Эмпориум',
+      campaignName: newCampaignName.trim() || 'Калинковичи ЗБХ',
       ceoName: newCeoName.trim() || 'Елена Вэнс (генеральный директор)',
       funds: prestigeStartingFunds(newStartingFunds, nextLevel),
       week: 1,
@@ -894,6 +934,18 @@ const [activeEvent, setActiveEvent] = useState<GameEvent | ExpansionEvent | null
       roster: prev.roster.map(entry => (entry.id === characterId ? result.character : entry))
     }));
     showNotify(result.log);
+  };
+
+  /** Подписанный указ/приказ: попадает в сохранение и в журнал событий кампании. */
+  const signDecreeDocument = (document: SignedDecree) => {
+    setGameState(prev => ({
+      ...prev,
+      decrees: { documents: [...prev.decrees.documents, document] },
+      log: [
+        `${DECREE_KIND_LABELS[document.kind]} № ${document.number}/${document.week} «${document.title}» подписан ${DECREE_RANK_LABELS[document.rank]}, ЭП Ed25519 ${document.signature.fingerprint.slice(0, 8).toUpperCase()}…`,
+        ...prev.log
+      ].slice(0, 50)
+    }));
   };
 
   const buildOrUpgradeBuilding = (buildingId: BuildingId) => {
@@ -1608,6 +1660,35 @@ const refreshCandidates = () => {
       log: [`Складской мезонин: выдано ${amount} ед. груза (осталось ${prev.warehouse.occupancy - amount}/${prev.warehouse.capacity}).`, ...prev.log].slice(0, 50)
     }));
     showNotify(`Выдано со склада: ${amount} ед.`);
+  };
+
+  /** Покупает материалы на складской мезонин. */
+  const buyWarehouseMaterials = (materialId: string, quantity: number) => {
+    if (quantity <= 0) return;
+    const material = MATERIALS.find(m => m.id === materialId);
+    if (!material) {
+      showNotify('Материал не найден.');
+      return;
+    }
+    const totalCost = material.pricePerUnit * quantity;
+    const spaceNeeded = quantity;
+    
+    if (gameState.funds < totalCost) {
+      showNotify(`Недостаточно средств: нужно ${formatMoney(totalCost)}.`);
+      return;
+    }
+    if (!canStore(gameState.warehouse, spaceNeeded)) {
+      showNotify('Недостаточно места на складе.');
+      return;
+    }
+    
+    setGameState(prev => ({
+      ...prev,
+      funds: prev.funds - totalCost,
+      warehouse: { ...prev.warehouse, occupancy: prev.warehouse.occupancy + spaceNeeded },
+      log: [`Складской мезонин: куплено ${material.name} × ${quantity} ${material.unit} за ${formatMoney(totalCost)}.`, ...prev.log].slice(0, 50)
+    }));
+    showNotify(`Куплено: ${material.name} × ${quantity} ${material.unit} за ${formatMoney(totalCost)}.`);
   };
 
   /** Закупает топливо для котельной, если казна позволяет. */
@@ -2821,6 +2902,8 @@ if (employeeWeek.wagesPaid > 0) newLogs.push(`Выплачена зарплат�
         peakFunds: Math.max(nextMetaProgress.stats.peakFunds, currentFunds),
         totalRevenue: nextMetaProgress.stats.totalRevenue,
         prestigeLevel: nextMetaProgress.prestige.level,
+        // Weekly advance (event handler): the timestamp is the entry's date.
+        // eslint-disable-next-line react-hooks/purity
         date: new Date().toLocaleString()
       });
       setLeaderboard(nextLeaderboard);
@@ -2934,54 +3017,6 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
       };
     });
     showNotify(wasReserved ? 'Бронирование кандидата отменено.' : 'Кандидат зарезервирован до следующего еженедельного обновления.');
-  };
-
-  const launchCaravan = () => {
-    if (investment <= 0 || gameState.funds < investment) {
-      showNotify('Неверная сумма инвестиций или недостаточно средств в казне!');
-      return;
-    }
-    const leader = gameState.roster.find(c => c.id === selectedLeaderId);
-    const leaderName = leader ? leader.name : 'Оперативник синдиката';
-    const profit = Math.floor(investment * (0.8 + Math.random() * 0.6));
-    const premium = insurancePremium(caravanInsurancePlan, investment);
-    if (gameState.funds < investment + premium) {
-      showNotify('Недостаточно средств на инвестиции и страховую премию!');
-      return;
-    }
-
-    const newCaravan: Caravan = {
-      id: 'caravan_' + Math.random().toString(36).substring(2, 9),
-      name: caravanName,
-      originRegion: 'Западная Европа и Скандинавия',
-      destRegion,
-      leaderName,
-      leaderId: leader?.id,
-      investment,
-      potentialProfit: profit,
-      weeksTotal: 3,
-      weeksRemaining: 3,
-      status: 'traveling',
-      raidsTriggered: 0,
-      dispatchedWeek: gameState.week,
-      insurancePlan: caravanInsurancePlan,
-      insurancePremium: premium,
-      incidentHistory: []
-    };
-
-    setGameState(prev => ({
-      ...prev,
-      funds: prev.funds - investment - premium,
-      caravans: [newCaravan, ...prev.caravans],
-      metaProgress: registerCaravanDispatched(prev.metaProgress),
-      log: [`Караван «${caravanName}» отправлен в ${destRegion} с инвестициями ${formatMoney(investment)}.${premium > 0 ? ` Страховка ${caravanInsurancePlan}, премия ${formatMoney(premium)}.` : ''}`, ...prev.log]
-    }));
-    const nextMatch = caravanName.match(/(№|#)(\d+)/);
-    if (nextMatch) {
-      const nextNum = parseInt(nextMatch[2], 10) + 1;
-      setCaravanName(caravanName.replace(nextMatch[0], `${nextMatch[1]}${nextNum}`));
-    }
-    showNotify('Торговый караван успешно отправлен!');
   };
 
   /**
@@ -3862,8 +3897,8 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
             <Sparkles className="w-8 h-8 font-bold" />
           </div>
 
-          <h1 className="text-3xl font-black tracking-tight text-white mb-2">EMPORIUM</h1>
-          <p className="text-xs text-slate-400 font-mono mb-8 uppercase tracking-widest">Глобальная стратегия и торговая симуляция v0.4.0</p>
+          <h1 className="text-3xl font-black tracking-tight text-white mb-2">КАЛИНКОВИЧИ ЗБХ</h1>
+          <p className="text-xs text-slate-400 font-mono mb-8 uppercase tracking-widest">Глобальная стратегия и торговая симуляция {APP_VERSION_LABEL}</p>
 
           <div className="space-y-3">
             <button
@@ -3931,6 +3966,8 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
               <FolderOpen className="w-4 h-4 text-amber-400" />
                Загрузка сохранений
             </button>
+
+            <InstallAppButton />
           </div>
 
           <div className="mt-8 pt-6 border-t border-slate-800 text-xs text-slate-500">
@@ -4828,7 +4865,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
             <Sparkles className="w-6 h-6 font-bold" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-white m-0 p-0">EMPORIUM <span className="text-xs px-2 py-0.5 bg-pink-500/20 text-pink-400 border border-pink-500/30 rounded-full font-mono">{APP_VERSION_LABEL}</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white m-0 p-0">КАЛИНКОВИЧИ ЗБХ <span className="text-xs px-2 py-0.5 bg-pink-500/20 text-pink-400 border border-pink-500/30 rounded-full font-mono">{APP_VERSION_LABEL}</span></h1>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
               <span className="truncate">{gameState.campaignName} (Слот #{gameState.slot})</span>
               <span className="nasa-readout inline-flex shrink-0 items-center gap-1 rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] tracking-widest text-amber-200">
@@ -4983,7 +5020,7 @@ log: [`Кандидат на рынке ${candidate.name} ${wasReserved ? 'сн�
           </nav>
           {isSidebarExpanded && (
             <div className="border-t border-slate-800 px-4 py-3 text-[10px] leading-relaxed text-slate-600">
-              EMPORIUM OPERATIONS<br />Глобальная стратегическая система
+              КАЛИНКОВИЧИ ЗБХ<br />Глобальная стратегическая система
             </div>
           )}
         </aside>
@@ -5604,139 +5641,12 @@ contracts={gameState.tradeSupplyContracts || []}
 
         {/* TRADE CARAVANS TAB */}
         {activeTab === 'caravans' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left">
-              <h2 className="text-lg font-bold text-white mb-1">Трансконтинентальные торговые караваны</h2>
-              <p className="text-slate-400 text-sm">Отправляйте инвестиционный капитал и руководителей синдиката в глобальные регионы ради выгодной коммерческой отдачи.</p>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left lg:col-span-1">
-                <h3 className="font-bold text-white text-base mb-4">Отправить новый караван</h3>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">Название маршрута</label>
-                    <input 
-                      type="text" 
-                      value={caravanName} 
-                      onChange={e => setCaravanName(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs focus:border-pink-500 outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">Регион назначения</label>
-                    <select 
-                      value={destRegion} 
-                      onChange={e => setDestRegion(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs focus:border-pink-500 outline-none"
-                    >
-                      {REGIONS.map(r => (
-                        <option key={r.id} value={r.name}>{r.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">Капиталовложения ($)</label>
-                    <input 
-                      type="number" 
-                      value={investment} 
-                      onChange={e => setInvestment(Number(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs focus:border-pink-500 outline-none font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">Глава каравана</label>
-                    <select 
-                      value={selectedLeaderId} 
-                      onChange={e => setSelectedLeaderId(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs focus:border-pink-500 outline-none"
-                    >
-                      {gameState.roster.map(c => (
-                        <option key={c.id} value={c.id}>{c.name} ({roleLabel(c.role)})</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 uppercase mb-1">Страховка груза</label>
-                    <select
-                      value={caravanInsurancePlan}
-                      onChange={e => setCaravanInsurancePlan(e.target.value as InsurancePlan)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs focus:border-pink-500 outline-none"
-                    >
-                      {Object.entries(INSURANCE_PLANS).map(([plan, terms]) => (
-                        <option key={plan} value={plan}>
-                          {plan === 'none' ? 'Без страховки' : plan === 'basic' ? 'Базовая (4%)' : plan === 'standard' ? 'Стандарт (8%)' : 'Полная (14%)'}
-                          {terms.premiumRate > 0 ? ` • премия ${formatMoney(Math.round(investment * terms.premiumRate))}` : ''}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="text-[10px] text-slate-400 mt-1">
-                      {caravanInsurancePlan !== 'none'
-                        ? `Покрытие убытка после franquши: ${Math.round(INSURANCE_PLANS[caravanInsurancePlan].coverageRate * 100)}%, макс. выплата ${Math.round(INSURANCE_PLANS[caravanInsurancePlan].maxPayoutRate * 100)}% stakes.`
-                        : 'Без страховки — убытки при налёте не компенсируются.'}
-                    </div>
-                  </div>
-
-                  <div className="text-[10px] font-mono text-slate-400 mt-2">
-                    Риск налёта на маршруте: <strong className="text-amber-400">{Math.round(dangerForRegion(destRegion) * 100)}% опасность региона</strong> • estimated chance <strong className="text-amber-400">{Math.round(raidChanceForRoute(destRegion, (gameState.roster.find(c => c.id === selectedLeaderId)?.skill ?? 55), 0, 'caravan') * 100)}%</strong> в неделю.
-                  </div>
-
-                  <button
-                    onClick={launchCaravan}
-                    className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3 rounded-lg text-xs transition shadow-lg shadow-amber-500/20 cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    <Truck className="w-4 h-4" /> Отправить караван
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left lg:col-span-2">
-                <h3 className="font-bold text-white text-base mb-4">Активные и завершённые караваны</h3>
-                <div className="space-y-3">
-                  {gameState.caravans.map(caravan => (
-                    <div key={caravan.id} className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
-                      <div>
-                        <div className="font-bold text-white text-sm">{caravan.name}</div>
-                        <div className="text-xs text-slate-400 mt-0.5">Назначение: <strong className="text-amber-400">{caravan.destRegion}</strong> • Глава: {caravan.leaderName}</div>
-                        <div className="text-xs font-mono text-slate-500 mt-1">Вложения: {formatMoney(caravan.investment)} • Потенциальная прибыль: <strong className="text-emerald-400">{formatMoney(caravan.potentialProfit)}</strong></div>
-                         {(caravan.raidsTriggered ?? 0) > 0 && (
-                           <div className="text-[10px] font-mono text-red-400/80 mt-1">
-                             нападений за маршрут: {caravan.raidsTriggered}
-                           </div>
-                         )}
-                         {caravan.insurancePlan && caravan.insurancePlan !== 'none' && (
-                           <div className="text-[10px] font-mono text-purple-400/90 mt-1">
-                             Страховка: {caravan.insurancePlan} (премия {formatMoney(caravan.insurancePremium ?? 0)})
-                           </div>
-                         )}
-                         {caravan.endWeek !== undefined && (
-                           <div className="text-[10px] font-mono text-slate-500 mt-1">
-                             Неделя завершения: {caravan.endWeek}
-                           </div>
-                         )}
-                         {(caravan.incidentHistory ?? []).slice(-3).map((inc, i) => (
-                           <div key={i} className="text-[10px] font-mono text-slate-400 mt-1">
-                             {inc.week} нед. • {inc.summary}
-                           </div>
-                         ))}
-                       </div>
-                       <div className="text-right font-mono">
-                         <span className={`text-xs px-2.5 py-1 rounded-full font-bold border ${
-                           caravan.status === 'traveling' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : caravan.status === 'raided' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : caravan.status === 'lost' ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                         }`}>
-                           {caravan.status === 'traveling' ? `${caravan.weeksRemaining} нед. осталось` : caravan.status === 'raided' ? 'Ограблен' : caravan.status === 'lost' ? 'Потерян' : 'Завершён'}
-                         </span>
-                       </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <CaravansTab
+            gameState={gameState}
+            onUpdateState={setGameState}
+            showNotify={showNotify}
+            roleLabel={roleLabel}
+          />
         )}
 
         {/* CAPTURE OPERATIONS TAB */}
@@ -5934,6 +5844,44 @@ contracts={gameState.tradeSupplyContracts || []}
           />
         )}
 
+        {/* BONDAGE ARENA TAB */}
+        {activeTab === 'bondage_arena' && (
+          <BondageArenaTab
+            state={gameState}
+            onUpdateState={setGameState}
+            onReturnToCampaign={() => setActiveTab('dashboard')}
+          />
+        )}
+
+        {/* ARENA MANAGEMENT TAB — sponsors, staff and arena schedule */}
+        {activeTab === 'arena_management' && (
+          <ArenaManagementTab
+            state={gameState}
+            onUpdateState={setGameState}
+          />
+        )}
+
+        {/* ARENA CAREER TAB */}
+        {activeTab === 'arena_career' && (
+          <ArenaCareerTab
+            state={gameState}
+            onUpdateState={setGameState}
+          />
+        )}
+
+        {/* TRAINING GROUNDS TAB */}
+        {activeTab === 'training_grounds' && (
+          <TrainingGroundsTab
+            state={gameState}
+            onUpdateState={setGameState}
+          />
+        )}
+
+        {/* ARENA SPECTATOR TAB — stored matches, replays and killcams */}
+        {activeTab === 'arena_spectator' && (
+          <ArenaSpectatorTab />
+        )}
+
         {/* REST ZONE TAB */}
         {activeTab === 'rest_zone' && (
           <RestZoneTab
@@ -6014,101 +5962,12 @@ contracts={gameState.tradeSupplyContracts || []}
 
         {/* CONTRACTS TAB */}
         {activeTab === 'contracts' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left">
-              <h2 className="text-lg font-bold text-white mb-1">Контракты для VIP-клиентов</h2>
-              <p className="text-slate-400 text-sm">Назначайте оперативников на контракты клиентов. По завершении контракта привлекательность и навык назначенных оперативников сверяются с требованиями.</p>
-            </div>
-
-            <div className="space-y-4">
-              {gameState.contracts.length === 0 ? (
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 text-center text-slate-400 text-sm">
-                  Нет активных VIP-контрактов. Продвиньте неделю, чтобы открыть новые возможности.
-                </div>
-              ) : (
-                gameState.contracts.map(contract => {
-                  const assignedOps = (contract.assignedOperativeIds || [])
-                    .map(id => gameState.roster.find(c => c.id === id))
-                    .filter(Boolean) as Character[];
-                  const avgAttr = assignedOps.length > 0
-                    ? Math.round(assignedOps.reduce((sum, c) => sum + calculateAttractiveness(c), 0) / assignedOps.length)
-                    : 0;
-                  const meetsReq = assignedOps.length > 0 && avgAttr >= contract.requiredAttractiveness;
-
-                  return (
-                    <div key={contract.id} className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left">
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <h3 className="font-bold text-white text-base">{contract.title}</h3>
-                          <p className="text-xs text-slate-400 mt-0.5">Клиент: {contract.clientName}</p>
-                        </div>
-                        <span className="text-xs font-mono px-2.5 py-1 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                          {contract.weeksRemaining}/{contract.durationWeeks} нед.
-                        </span>
-                      </div>
-
-                      <p className="text-xs text-slate-300 mb-3">{contract.description}</p>
-
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-xs">
-                        <div>
-                          <span className="text-slate-500">Награда</span>
-                          <div className="font-bold text-emerald-400">{formatMoney(contract.rewardFunds)}</div>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Репутация</span>
-                          <div className="font-bold text-purple-400">+{contract.rewardReputation}</div>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Нужная привлекательность</span>
-                          <div className="font-bold text-amber-400">{contract.requiredAttractiveness}/100</div>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Назначенные оперативники</span>
-                          <div className={`font-bold ${meetsReq ? 'text-emerald-400' : assignedOps.length > 0 ? 'text-amber-400' : 'text-red-400'}`}>
-                            {assignedOps.length} {assignedOps.length > 0 && `(${avgAttr}/100)`}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap gap-2 mb-3">
-                        {(contract.assignedOperativeIds || []).map(charId => {
-                          const char = gameState.roster.find(c => c.id === charId);
-                          if (!char) return null;
-                          return (
-                            <div key={charId} className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-                              <img src={char.image} alt={char.name} className="w-8 h-8 rounded object-cover border border-slate-700" />
-                              <span className="text-xs text-white">{char.name}</span>
-                              <button
-                                onClick={() => assignOperativeToContract(contract.id, charId)}
-                                className="text-red-400 hover:text-red-300 text-xs font-bold"
-                                title="Убрать из контракта"
-                              >вњ•</button>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <div className="flex flex-wrap gap-2">
-                        {gameState.roster.filter(c => !(contract.assignedOperativeIds || []).includes(c.id)).map(char => (
-                          <button
-                            key={char.id}
-                            onClick={() => assignOperativeToContract(contract.id, char.id)}
-                            className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 hover:border-pink-500/50 transition text-left"
-                            title="Назначить в контракт"
-                          >
-                            <img src={char.image} alt={char.name} className="w-7 h-7 rounded object-cover border border-slate-700" />
-                            <span className="text-xs text-slate-300">{char.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
+          <ContractsTab
+            contracts={gameState.contracts}
+            roster={gameState.roster}
+            onToggleOperative={assignOperativeToContract}
+          />
         )}
-
         {/* GOODS AUCTION HOUSE TAB */}
         {activeTab === 'auction_house' && (
           <AuctionHouseTab
@@ -6357,6 +6216,18 @@ contracts={gameState.tradeSupplyContracts || []}
           </div>
         )}
 
+        {/* DECREES TAB — указы и приказы с электронной подписью */}
+        {activeTab === 'decrees' && (
+          <DecreesTab
+            week={gameState.week}
+            date={formatDayHeading(campaignDateForDay(selectedDayIndex)) + ' ' + campaignDateForDay(selectedDayIndex).year}
+            campaignName={gameState.campaignName}
+            roster={gameState.roster}
+            decrees={gameState.decrees}
+            onSign={signDecreeDocument}
+          />
+        )}
+
         {/* FINANCES & LOANS TAB */}
         {activeTab === 'finances' && (
           <div className="space-y-6">
@@ -6546,32 +6417,10 @@ contracts={gameState.tradeSupplyContracts || []}
           </div>
         )}
 
-        {/* REGIONS TAB */}
-        {activeTab === 'regions' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left">
-              <h2 className="text-lg font-bold text-white mb-1">Глобальные регионы и сеть диаспор</h2>
-              <p className="text-slate-400 text-sm">Обзор всех активных торговых регионов и этнических диаспор, интегрированных в сеть Emporium.</p>
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {REGIONS.map(reg => {
-                const count = gameState.roster.filter(c => c.region === reg.id).length;
-                return (
-                  <div key={reg.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg flex items-center justify-between text-left">
-                    <div>
-                      <h3 className="font-bold text-white text-sm mb-1">{reg.name}</h3>
-                      <p className="text-xs text-slate-400 font-mono">ID региона: {reg.id}</p>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs font-semibold text-slate-500 uppercase">Оперативников</div>
-                      <div className="text-base font-bold font-mono text-amber-400">{count}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        {/* GLOBAL REGIONS TAB */}
+        {activeTab === 'regions' && (
+          <GlobalRegionsTab roster={gameState.roster} />
         )}
 
         {/* META TAB — achievements, goal and records */}
@@ -6610,6 +6459,7 @@ contracts={gameState.tradeSupplyContracts || []}
             onUpgrade={upgradeWarehouseMezzanine}
             onStore={storeWarehouseGoods}
             onRetrieve={retrieveWarehouseGoods}
+            onBuyMaterials={buyWarehouseMaterials}
           />
         )}
 
@@ -6659,12 +6509,10 @@ contracts={gameState.tradeSupplyContracts || []}
 
       {/* Footer */}
       <footer className="bg-slate-900 border-t border-slate-800 px-6 py-4 text-center text-xs text-slate-500">
-        Emporium Web Edition v0.4.0 • Симулятор стратегии и управления • Все права защищены.
+        Калинковичи ЗБХ Web Edition v0.9.5 • Симулятор стратегии и управления • Все права защищены.
       </footer>
 
       <PhoneWidget />
     </div>
   );
 }
-
-
